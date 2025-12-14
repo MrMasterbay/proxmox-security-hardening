@@ -49,6 +49,7 @@ echo "Disabling root Web UI access..."
 pveum acl delete / -user root@pam 2>/dev/null || true
 pveum role add ConsoleOnly -privs "Sys.Console,Sys.Audit" 2>/dev/null || true
 pveum acl modify / -user root@pam -role ConsoleOnly
+pveum acl modify / -user root@pam -role ConsoleOnly -propagate 1
 
 # Save credentials securely
 cat > /root/admin_credentials.txt <<EOF
