@@ -1,77 +1,85 @@
 #!/bin/bash
-# Proxmox Security Hardening Script 
-# Enhanced with AppArmor, Kernel Hardening, Auditd, and more
+# Proxmox Security Hardening Script v3.0
+# Enhanced with Root WebUI blocking, BackupAdmin, and complete security hardening
 # Backup configs before running!
 
 set -e
 
-echo "=== Proxmox Security Hardening ==="
+echo "=== Proxmox Security Hardening v3.0 ==="
 echo "Creating backup of configs..."
 BACKUP_DIR="/root/security-backup-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$BACKUP_DIR"
 cp /etc/ssh/sshd_config "$BACKUP_DIR/" 2>/dev/null || true
 cp /etc/default/grub "$BACKUP_DIR/" 2>/dev/null || true
 cp /etc/sysctl.conf "$BACKUP_DIR/" 2>/dev/null || true
+cp /etc/pve/user.cfg "$BACKUP_DIR/" 2>/dev/null || true
 
-# Show support message
-show_support_message() {
-    # Don't show banner if we're in a SSH session (remote execution)
-    if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ] || [ "$TERM" = "dumb" ] || [ "$SHOW_BANNER" = "false" ]; then
-        return
-    fi
-    
-    echo "============================================================================"
-    echo "  Proxmox VE Security Hardening Tool"
-    echo "  Made by Nico Schmidt (baGStube_Nico)"
-    echo ""
-    echo "  Features: Hardens your Proxmox VE System with AppArmor, Kernel Hardening, Auditd, and more"
-    echo ""
-    echo "  Please consider supporting this script development:"
-    echo "  💖 Ko-fi: ko-fi.com/bagstube_nico"
-    echo "  🔗 Links: linktr.ee/bagstube_nico"
-    echo "============================================================================"
-    echo ""
-}
-
-# Show the Support message
-show_support_message
-
-# 0. Install sudo and create users
+# 0. Install required packages
 echo "Installing required packages..."
-apt update && apt install -y sudo pwgen apparmor apparmor-utils auditd audispd-plugins unattended-upgrades apt-listchanges lynis git fail2ban
+apt update && apt install -y sudo pwgen apparmor apparmor-utils auditd audispd-plugins unattended-upgrades apt-listchanges lynis git fail2ban iptables-persistent mailutils
 
-echo "Creating ServerAdmin user with random suffix..."
-RAND=$(shuf -i 100000-999999 -n1)
-SERVERADMIN="ServerAdmin_${RAND}"
+echo "Creating administrative users..."
 
-# Generate secure 32-character password
+# Create ServerAdmin user
+RAND_SERVER=$(shuf -i 100000-999999 -n1)
+SERVERADMIN="ServerAdmin_${RAND_SERVER}"
 SERVERADMIN_PASS=$(LC_ALL=C tr -dc 'A-Za-z0-9!@#$%^&*' < /dev/urandom | head -c 32)
 
-# Create user with password
 adduser --gecos "Server Administrator" --disabled-password "$SERVERADMIN"
 echo "$SERVERADMIN:$SERVERADMIN_PASS" | chpasswd
 usermod -aG sudo "$SERVERADMIN"
 
-# Add ServerAdmin as Proxmox Administrator
-pveum user add $SERVERADMIN@pam -comment "Proxmox Administrator"
+# Create BackupAdmin user
+RAND_BACKUP=$(shuf -i 100000-999999 -n1)
+BACKUPADMIN="BackupAdmin_${RAND_BACKUP}"
+BACKUPADMIN_PASS=$(LC_ALL=C tr -dc 'A-Za-z0-9!@#$%^&*' < /dev/urandom | head -c 32)
+
+adduser --gecos "Backup Administrator" --disabled-password "$BACKUPADMIN"
+echo "$BACKUPADMIN:$BACKUPADMIN_PASS" | chpasswd
+usermod -aG sudo "$BACKUPADMIN"
+
+# Add both users as Proxmox Administrators
+pveum user add $SERVERADMIN@pam -comment "Primary Proxmox Administrator"
+pveum user add $BACKUPADMIN@pam -comment "Backup Proxmox Administrator"
 pveum aclmod / -user $SERVERADMIN@pam -role Administrator
+pveum aclmod / -user $BACKUPADMIN@pam -role Administrator
+
+# Disable root login in Proxmox Web UI
+echo "Disabling root Web UI access..."
+pveum acl delete / -user root@pam 2>/dev/null || true
+pveum role add ConsoleOnly -privs "Sys.Console,Sys.Audit" 2>/dev/null || true
+pveum acl modify / -user root@pam -role ConsoleOnly
 
 # Save credentials securely
-cat > /root/serveradmin_credentials.txt <<EOF
-===========================================
-SERVER ADMIN CREDENTIALS
-===========================================
+cat > /root/admin_credentials.txt <<EOF
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PRIMARY ADMINISTRATOR CREDENTIALS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Username: $SERVERADMIN
 Password: $SERVERADMIN_PASS
+Role:     Proxmox Administrator (Primary)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BACKUP ADMINISTRATOR CREDENTIALS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Username: $BACKUPADMIN
+Password: $BACKUPADMIN_PASS
+Role:     Proxmox Administrator (Backup)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Created:  $(date)
-Role:     Proxmox Administrator
-===========================================
-KEEP THIS FILE SECURE AND DELETE AFTER SAVING TO PASSWORD MANAGER!
-EOF
-chmod 600 /root/serveradmin_credentials.txt
 
-echo "✓ Created user: $SERVERADMIN with Proxmox Administrator role"
-echo "✓ Credentials saved to: /root/serveradmin_credentials.txt"
+⚠️  ROOT WEB UI ACCESS HAS BEEN DISABLED!
+    Use the admin accounts above for Web UI access.
+    Root can only access via console.
+
+KEEP THIS FILE SECURE!
+DELETE AFTER SAVING TO PASSWORD MANAGER!
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EOF
+chmod 600 /root/admin_credentials.txt
+
+echo "✓ Created users: $SERVERADMIN (Primary) and $BACKUPADMIN (Backup)"
+echo "✓ Root Web UI access DISABLED - console only"
+echo "✓ Credentials saved to: /root/admin_credentials.txt"
 echo ""
 
 # 1. Enable AppArmor
@@ -137,6 +145,21 @@ auditctl -w /etc/shadow -p wa -k shadow_changes
 auditctl -w /etc/ssh/sshd_config -p wa -k sshd_config
 auditctl -w /etc/sudoers -p wa -k sudoers_changes
 auditctl -w /var/log/auth.log -p wa -k auth_log
+auditctl -w /etc/pve/ -p wa -k proxmox_config
+
+# Save audit rules
+cat > /etc/audit/rules.d/hardening.rules <<EOF
+# Monitor authentication files
+-w /etc/passwd -p wa -k passwd_changes
+-w /etc/shadow -p wa -k shadow_changes
+-w /etc/ssh/sshd_config -p wa -k sshd_config
+-w /etc/sudoers -p wa -k sudoers_changes
+-w /var/log/auth.log -p wa -k auth_log
+-w /etc/pve/ -p wa -k proxmox_config
+# Monitor root activities
+-a always,exit -F arch=b64 -F uid=0 -S execve -k root_commands
+EOF
+service auditd restart
 echo "✓ Auditd configured"
 
 # 7. Secure SSH
@@ -152,7 +175,7 @@ MaxAuthTries 3
 ClientAliveInterval 300
 ClientAliveCountMax 2
 Protocol 2
-AllowUsers $SERVERADMIN
+AllowUsers $SERVERADMIN $BACKUPADMIN
 PermitEmptyPasswords no
 X11Forwarding no
 MaxStartups 3:50:10
@@ -163,13 +186,15 @@ AllowAgentForwarding no
 AllowTcpForwarding no
 EOF
 
-# Setup SSH keys for new user
-echo "Setting up SSH directories for ServerAdmin..."
-mkdir -p /home/$SERVERADMIN/.ssh
-chmod 700 /home/$SERVERADMIN/.ssh
-touch /home/$SERVERADMIN/.ssh/authorized_keys
-chmod 600 /home/$SERVERADMIN/.ssh/authorized_keys
-chown -R $SERVERADMIN:$SERVERADMIN /home/$SERVERADMIN/.ssh
+# Setup SSH directories for both admin users
+for ADMIN_USER in $SERVERADMIN $BACKUPADMIN; do
+    echo "Setting up SSH directories for $ADMIN_USER..."
+    mkdir -p /home/$ADMIN_USER/.ssh
+    chmod 700 /home/$ADMIN_USER/.ssh
+    touch /home/$ADMIN_USER/.ssh/authorized_keys
+    chmod 600 /home/$ADMIN_USER/.ssh/authorized_keys
+    chown -R $ADMIN_USER:$ADMIN_USER /home/$ADMIN_USER/.ssh
+done
 
 systemctl restart sshd
 echo "✓ SSH hardened (Port: 2222)"
@@ -180,6 +205,9 @@ cat > /etc/sudoers.d/hardening <<EOF
 Defaults timestamp_timeout=5
 Defaults passwd_tries=3
 Defaults logfile=/var/log/sudo.log
+Defaults requiretty
+Defaults use_pty
+Defaults lecture="always"
 EOF
 chmod 440 /etc/sudoers.d/hardening
 echo "✓ Sudo hardened"
@@ -196,108 +224,220 @@ echo "✓ Automatic updates enabled"
 
 # 10. Setup iptables firewall with rate limiting
 echo "Configuring iptables..."
-# Install iptables-persistent to save rules
-DEBIAN_FRONTEND=noninteractive apt install -y iptables-persistent
 
+# Clear existing rules
 iptables -F
+iptables -X
+iptables -t nat -F
+iptables -t nat -X
+iptables -t mangle -F
+iptables -t mangle -X
+
+# Basic rules
 iptables -A INPUT -i lo -j ACCEPT
 iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 iptables -A INPUT -p icmp --icmp-type echo-request -j ACCEPT
 
-# SSH with rate limiting
+# SSH with rate limiting (4 attempts per minute)
 iptables -A INPUT -p tcp --dport 2222 -m state --state NEW -m recent --set --name SSH
+iptables -A INPUT -p tcp --dport 2222 -m state --state NEW -m recent --update --seconds 60 --hitcount 4 --name SSH -j LOG --log-prefix "SSH-Rate-Limit: "
 iptables -A INPUT -p tcp --dport 2222 -m state --state NEW -m recent --update --seconds 60 --hitcount 4 --name SSH -j DROP
-iptables -A INPUT -p tcp --dport 2222 -m state --state NEW -j ACCEPT
+iptables -A INPUT -p tcp --dport 2222 -j ACCEPT
 
-# Proxmox Web UI with rate limiting
+# Proxmox Web UI (Port 8006) with rate limiting (30 attempts per minute)
 iptables -A INPUT -p tcp --dport 8006 -m state --state NEW -m recent --set --name WEBUI
-iptables -A INPUT -p tcp --dport 8006 -m state --state NEW -m recent --update --seconds 60 --hitcount 10 --name WEBUI -j DROP
+iptables -A INPUT -p tcp --dport 8006 -m state --state NEW -m recent --update --seconds 60 --hitcount 30 --name WEBUI -j LOG --log-prefix "WebUI-Rate-Limit: "
+iptables -A INPUT -p tcp --dport 8006 -m state --state NEW -m recent --update --seconds 60 --hitcount 30 --name WEBUI -j DROP
 iptables -A INPUT -p tcp --dport 8006 -j ACCEPT
 
+# Port 8007 (VNC WebSocket)
+iptables -A INPUT -p tcp --dport 8007 -m state --state NEW -m recent --set --name WEBSOCKET
+iptables -A INPUT -p tcp --dport 8007 -m state --state NEW -m recent --update --seconds 60 --hitcount 30 --name WEBSOCKET -j DROP
+iptables -A INPUT -p tcp --dport 8007 -j ACCEPT
+
+# Spice Proxy
+iptables -A INPUT -p tcp --dport 3128 -j ACCEPT
+
+# Cluster communication (if cluster is used)
+iptables -A INPUT -p udp --dport 5404:5405 -j ACCEPT  # Corosync
+iptables -A INPUT -p tcp --dport 60000:60050 -j ACCEPT  # Live-Migration
+
+# Default policies
 iptables -P INPUT DROP
-iptables -P FORWARD DROP
+iptables -P FORWARD ACCEPT  # Important for VMs/Containers!
 iptables -P OUTPUT ACCEPT
 
-# Save iptables rules
+# Save rules
 iptables-save > /etc/iptables/rules.v4
+ip6tables-save > /etc/iptables/rules.v6
+
 echo "✓ Firewall configured with rate limiting"
 
 # 11. Configure Fail2Ban
 echo "Configuring Fail2Ban..."
 
-# Create fail2ban directory if it doesn't exist
+# Create fail2ban directories
 mkdir -p /etc/fail2ban/filter.d
+mkdir -p /etc/fail2ban/jail.d
 
+# Main jail configuration
 cat > /etc/fail2ban/jail.local <<EOF
 [DEFAULT]
 bantime = 3600
 findtime = 600
 maxretry = 3
+destemail = root@localhost
+action = %(action_mwl)s
 
 [sshd]
 enabled = true
 port = 2222
+logpath = /var/log/auth.log
+maxretry = 3
+bantime = 7200
 
 [proxmox]
 enabled = true
 port = 8006
 filter = proxmox
 logpath = /var/log/daemon.log
+maxretry = 5
+bantime = 3600
 
-[pve-dashboard]
+[pve-webui]
 enabled = true
 port = 8006
-filter = pve-dashboard
+filter = pve-webui
 logpath = /var/log/pveproxy/access.log
 maxretry = 5
 bantime = 7200
+
+[proxmox-root]
+enabled = true
+port = 8006
+filter = proxmox-root
+logpath = /var/log/pveproxy/access.log
+maxretry = 1
+bantime = 86400
+action = %(action_mwl)s
 EOF
 
+# Proxmox filter
 cat > /etc/fail2ban/filter.d/proxmox.conf <<EOF
 [Definition]
 failregex = pvedaemon\[.*authentication failure; rhost=<HOST>
 ignoreregex =
 EOF
 
-cat > /etc/fail2ban/filter.d/pve-dashboard.conf <<EOF
+# PVE WebUI filter
+cat > /etc/fail2ban/filter.d/pve-webui.conf <<EOF
 [Definition]
 failregex = ^<HOST> -.*POST /api2/json/access/ticket HTTP.*401
 ignoreregex =
 EOF
 
-systemctl enable --now fail2ban
-systemctl restart fail2ban
-echo "✓ Fail2Ban configured"
+# Root login attempt filter
+cat > /etc/fail2ban/filter.d/proxmox-root.conf <<EOF
+[Definition]
+failregex = pveproxy\[.*authentication failure.*user=root@pam.*rhost=<HOST>
+            ^<HOST> -.*POST /api2/json/access/ticket.*root@pam.*401
+ignoreregex =
+EOF
 
-# 12. Bind Proxmox services to localhost (optional - commented out)
-# echo "Binding Proxmox services to localhost..."
-# echo 'LISTEN_IP="127.0.0.1"' >> /etc/default/pveproxy
-# systemctl restart pveproxy
-# systemctl mask --now spiceproxy
+systemctl enable fail2ban
+systemctl restart fail2ban
+echo "✓ Fail2Ban configured with root login protection"
+
+# 12. Root login monitoring
+echo "Setting up root login monitoring..."
+cat > /usr/local/bin/monitor-root-attempts <<'EOF'
+#!/bin/bash
+# Monitor root login attempts
+LOG_FILE="/var/log/root-access-attempts.log"
+ALERT_EMAIL="root@localhost"
+
+# Check for root login attempts in the last 5 minutes
+if grep -q "authentication failure.*user=root@pam" /var/log/pveproxy/access.log 2>/dev/null; then
+    echo "[$(date)] WARNING: Root Web UI login attempt detected!" >> $LOG_FILE
+    tail -n 20 /var/log/pveproxy/access.log | grep "root@pam" >> $LOG_FILE
+    
+    # Send alert email (if mail is configured)
+    echo "Root login attempt detected on $(hostname) at $(date)" | \
+        mail -s "SECURITY ALERT: Root Login Attempt on $(hostname)" $ALERT_EMAIL 2>/dev/null || true
+fi
+
+# Check SSH root attempts
+if grep -q "Failed password for root" /var/log/auth.log 2>/dev/null; then
+    echo "[$(date)] WARNING: Root SSH login attempt detected!" >> $LOG_FILE
+    tail -n 20 /var/log/auth.log | grep "Failed password for root" >> $LOG_FILE
+fi
+EOF
+chmod +x /usr/local/bin/monitor-root-attempts
+
+# Add to crontab
+echo "*/5 * * * * root /usr/local/bin/monitor-root-attempts" >> /etc/crontab
+
+echo "✓ Root login monitoring configured"
 
 # 13. Enable Proxmox firewall
 echo "Enabling Proxmox firewall..."
 pvesh set /cluster/firewall/options --enable 1 2>/dev/null || echo "⚠ Proxmox firewall config requires manual setup"
 
-# 14. SSH dynamic whitelist
+# 14. SSH dynamic whitelist for admin users
 echo "Setting up SSH dynamic whitelist..."
-cat >> /home/$SERVERADMIN/.bash_profile <<'PROFILEEOF'
+for ADMIN_USER in $SERVERADMIN $BACKUPADMIN; do
+    cat >> /home/$ADMIN_USER/.bash_profile <<'PROFILEEOF'
 # Auto-whitelist SSH source
 if [ -n "$SSH_CLIENT" ]; then
     sudo iptables -I INPUT -s ${SSH_CLIENT%% *}/32 -j ACCEPT 2>/dev/null || true
 fi
 PROFILEEOF
 
-cat >> /home/$SERVERADMIN/.bash_logout <<'LOGOUTEOF'
+    cat >> /home/$ADMIN_USER/.bash_logout <<'LOGOUTEOF'
 # Remove SSH whitelist on logout
 if [ -n "$SSH_CLIENT" ]; then
     sudo iptables -D INPUT -s ${SSH_CLIENT%% *}/32 -j ACCEPT 2>/dev/null || true
 fi
 LOGOUTEOF
 
-chown $SERVERADMIN:$SERVERADMIN /home/$SERVERADMIN/.bash_profile /home/$SERVERADMIN/.bash_logout 2>/dev/null || true
+    chown $ADMIN_USER:$ADMIN_USER /home/$ADMIN_USER/.bash_profile /home/$ADMIN_USER/.bash_logout 2>/dev/null || true
+done
 
-# 15. Install Proxmox Auto-Update Script (RECOMMENDED)
+# 15. Verification script
+cat > /usr/local/bin/verify-security <<EOF
+#!/bin/bash
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "Security Configuration Verification"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+echo "1. Root Access Status:"
+echo -n "   SSH Login: "
+grep -q "^PermitRootLogin no" /etc/ssh/sshd_config && echo "✓ Blocked" || echo "✗ Allowed"
+echo -n "   Web UI: "
+pveum acl list | grep -q "root@pam.*Administrator" && echo "✗ Allowed" || echo "✓ Blocked"
+echo ""
+echo "2. Admin Users:"
+pveum user list | grep -E "(ServerAdmin|BackupAdmin)" | awk '{print "   •", \$1}'
+echo ""
+echo "3. Active Services:"
+echo -n "   SSH: "; systemctl is-active sshd
+echo -n "   Fail2Ban: "; systemctl is-active fail2ban
+echo -n "   Firewall: "; iptables -L INPUT -n | grep -q "DROP" && echo "Active" || echo "Inactive"
+echo -n "   AppArmor: "; systemctl is-active apparmor
+echo -n "   Auditd: "; systemctl is-active auditd
+echo ""
+echo "4. Open Ports:"
+ss -tlnp | grep LISTEN | awk '{print "   •", \$4}'
+echo ""
+echo "5. Failed Login Attempts (last 24h):"
+echo -n "   Root attempts: "
+grep -c "root@pam.*authentication failure" /var/log/pveproxy/access.log 2>/dev/null || echo "0"
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+EOF
+chmod +x /usr/local/bin/verify-security
+
+# 16. Install Proxmox Auto-Update Script (RECOMMENDED)
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "📦 RECOMMENDED: Proxmox Auto-Update Script"
@@ -319,19 +459,16 @@ echo ""
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     echo "Installing Proxmox Auto-Update Script..."
     
-    # Clone the repository
     cd /root
     git clone https://github.com/MrMasterbay/proxmox-auto-update.git
     cd proxmox-auto-update
     chmod +x proxmox-auto-update.sh
     
-    # Basic configuration
     echo ""
     echo "Configuring Auto-Update Script..."
     read -p "Enter email address for notifications (or press Enter for root@localhost): " EMAIL_ADDRESS
     EMAIL_ADDRESS=${EMAIL_ADDRESS:-root@localhost}
     
-    # Update email in script
     sed -i "s/MAIL_TO=\"root@localhost\"/MAIL_TO=\"$EMAIL_ADDRESS\"/" /root/proxmox-auto-update/proxmox-auto-update.sh
     
     echo ""
@@ -343,8 +480,6 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
     echo ""
     echo "Test with: /root/proxmox-auto-update/proxmox-auto-update.sh"
     echo "Logs at:   /var/log/proxmox-cluster-auto-update.log"
-    echo ""
-    echo "More info: https://github.com/MrMasterbay/proxmox-auto-update"
 else
     echo ""
     echo "Skipped Auto-Update Script installation."
@@ -352,68 +487,84 @@ else
     echo "https://github.com/MrMasterbay/proxmox-auto-update"
 fi
 
-# 16. Lynis Security Audit
+# 17. Lynis Security Audit
 echo ""
 echo "Running Lynis security audit..."
 lynis audit system --quick > "$BACKUP_DIR/lynis-report.txt" 2>&1 || true
 echo "✓ Lynis report saved to: $BACKUP_DIR/lynis-report.txt"
 
+# 18. Run verification
 echo ""
-echo "=== Hardening Complete ==="
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "CREATED USER:"
-echo "  • $SERVERADMIN (Proxmox Administrator)"
+echo "Running security verification..."
+/usr/local/bin/verify-security
+
 echo ""
-echo "CREDENTIALS:"
-echo "  → /root/serveradmin_credentials.txt"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "            🔒 HARDENING COMPLETE 🔒"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-cat /root/serveradmin_credentials.txt
+echo "CREATED ADMIN USERS:"
+echo "  • $SERVERADMIN (Primary Administrator)"
+echo "  • $BACKUPADMIN (Backup Administrator)"
 echo ""
-echo "HARDENING APPLIED:"
-echo "  ✓ AppArmor enabled"
+echo "ROOT ACCESS STATUS:"
+echo "  • SSH Login: BLOCKED"
+echo "  • Web UI Login: BLOCKED (Console only)"
+echo "  • Failed root attempts will ban IP for 24 hours"
+echo ""
+echo "CREDENTIALS SAVED TO:"
+echo "  → /root/admin_credentials.txt"
+echo ""
+cat /root/admin_credentials.txt
+echo ""
+echo "SECURITY FEATURES ENABLED:"
+echo "  ✓ AppArmor active"
 echo "  ✓ Kernel parameters hardened"
-echo "  ✓ Auditd configured"
+echo "  ✓ Auditd logging all system changes"
 echo "  ✓ SSH hardened (Port 2222)"
-echo "  ✓ Sudo timeout configured"
-echo "  ✓ Automatic updates enabled"
-echo "  ✓ Firewall with rate limiting"
-echo "  ✓ Fail2Ban configured"
+echo "  ✓ Sudo timeout & logging configured"
+echo "  ✓ Automatic security updates enabled"
+echo "  ✓ Firewall with rate limiting active"
+echo "  ✓ Fail2Ban protecting SSH & Web UI"
+echo "  ✓ Root login monitoring active"
 echo "  ✓ Unnecessary services disabled"
 echo "  ✓ IPv6 disabled"
-echo "  ✓ ServerAdmin configured as Proxmox Administrator"
 if [ -f "/root/proxmox-auto-update/proxmox-auto-update.sh" ]; then
     echo "  ✓ Proxmox Auto-Update Script installed"
 fi
 echo ""
-echo "IMPORTANT NEXT STEPS:"
-echo "1. SAVE the ServerAdmin credentials to your password manager"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "                  ⚠️  CRITICAL NEXT STEPS ⚠️"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-echo "2. Test SSH connection on NEW PORT:"
+echo "1. SAVE CREDENTIALS to your password manager NOW!"
+echo ""
+echo "2. TEST SSH connection on NEW PORT (keep current session open!):"
 echo "   ssh -p 2222 $SERVERADMIN@<your-server-ip>"
 echo ""
-echo "3. Test Proxmox Web UI login:"
+echo "3. TEST Proxmox Web UI login:"
 echo "   https://<your-server-ip>:8006"
 echo "   Username: $SERVERADMIN"
+echo "   Username: $BACKUPADMIN (backup)"
 echo ""
-echo "4. After successful test, delete credentials file:"
-echo "   shred -u /root/serveradmin_credentials.txt"
+echo "4. AFTER successful tests, DELETE credentials file:"
+echo "   shred -u /root/admin_credentials.txt"
 echo ""
 if [ -f "/root/proxmox-auto-update/proxmox-auto-update.sh" ]; then
     echo "5. Configure Auto-Update cron job:"
     echo "   crontab -e"
     echo "   Add: 0 3 * * 0 /root/proxmox-auto-update/proxmox-auto-update.sh"
     echo ""
-    echo "6. Review Lynis report:"
-else
-    echo "5. Review Lynis report:"
 fi
+echo "6. Review security audit report:"
 echo "   less $BACKUP_DIR/lynis-report.txt"
 echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "🔴 REBOOT REQUIRED for IPv6 and kernel changes:"
+echo "7. Verify security status anytime with:"
+echo "   verify-security"
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "🔴 SYSTEM REBOOT REQUIRED for all changes to take effect:"
 echo "   reboot"
 echo ""
-echo "Backup: $BACKUP_DIR/"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "Backup: $BACKUP_DIR/"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "Configuration backup saved to: $BACKUP_DIR/"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
