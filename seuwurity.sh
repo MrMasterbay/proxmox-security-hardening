@@ -1,5 +1,5 @@
 #!/bin/bash
-# Proxmox Security Hardening Script
+# Proxmox Security Hardening Script 
 # Enhanced with AppArmor, Kernel Hardening, Auditd, and more
 # Backup configs before running!
 
@@ -38,7 +38,7 @@ show_support_message
 
 # 0. Install sudo and create users
 echo "Installing required packages..."
-apt update && apt install -y sudo pwgen apparmor apparmor-utils auditd audispd-plugins unattended-upgrades apt-listchanges lynis git
+apt update && apt install -y sudo pwgen apparmor apparmor-utils auditd audispd-plugins unattended-upgrades apt-listchanges lynis git fail2ban
 
 echo "Creating ServerAdmin user with random suffix..."
 RAND=$(shuf -i 100000-999999 -n1)
@@ -196,6 +196,9 @@ echo "✓ Automatic updates enabled"
 
 # 10. Setup iptables firewall with rate limiting
 echo "Configuring iptables..."
+# Install iptables-persistent to save rules
+DEBIAN_FRONTEND=noninteractive apt install -y iptables-persistent
+
 iptables -F
 iptables -A INPUT -i lo -j ACCEPT
 iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
@@ -216,18 +219,14 @@ iptables -P FORWARD DROP
 iptables -P OUTPUT ACCEPT
 
 # Save iptables rules
-iptables-save > /etc/iptables.rules
-
-# Auto-load iptables on boot
-cat > /etc/network/if-up.d/iptables <<'EOF'
-#!/bin/sh
-iptables-restore < /etc/iptables.rules
-EOF
-chmod +x /etc/network/if-up.d/iptables
+iptables-save > /etc/iptables/rules.v4
 echo "✓ Firewall configured with rate limiting"
 
-# 11. Install and configure Fail2Ban
-echo "Installing Fail2Ban..."
+# 11. Configure Fail2Ban
+echo "Configuring Fail2Ban..."
+
+# Create fail2ban directory if it doesn't exist
+mkdir -p /etc/fail2ban/filter.d
 
 cat > /etc/fail2ban/jail.local <<EOF
 [DEFAULT]
@@ -267,6 +266,7 @@ ignoreregex =
 EOF
 
 systemctl enable --now fail2ban
+systemctl restart fail2ban
 echo "✓ Fail2Ban configured"
 
 # 12. Bind Proxmox services to localhost (optional - commented out)
@@ -413,5 +413,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo "🔴 REBOOT REQUIRED for IPv6 and kernel changes:"
 echo "   reboot"
 echo ""
+echo "Backup: $BACKUP_DIR/"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "Backup: $BACKUP_DIR/"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
