@@ -5,6 +5,30 @@
 
 set -e
 
+if [ "$(id -u)" -ne 0 ]; then
+    echo "This script must be run as root"
+    exit 1
+fi
+
+if ! command -v pveum &> /dev/null; then
+    echo "This doesn't appear to be a Proxmox system"
+    exit 1
+fi
+
+echo ""
+echo "⚠️  WARNING: This will disable root SSH and WebUI access!"
+echo "    📌 Ensure you have:"
+echo "       • Emergency backup saved"
+echo ""
+read -p "Type 'yes' to continue: " CONFIRM
+
+if [[ "$CONFIRM" != "yes" ]]; then
+    echo "Aborted."
+    exit 0
+fi
+
+echo "✅ Proceeding with security lockdown..."
+
 echo "=== Proxmox Security Hardening v3.0 ==="
 echo "Creating backup of configs..."
 BACKUP_DIR="/root/security-backup-$(date +%Y%m%d-%H%M%S)"
@@ -32,7 +56,7 @@ usermod -aG sudo "$SERVERADMIN"
 # Create BackupAdmin user
 RAND_BACKUP=$(shuf -i 100000-999999 -n1)
 BACKUPADMIN="BackupAdmin_${RAND_BACKUP}"
-BACKUPADMIN_PASS=$(LC_ALL=C tr -dc 'A-Za-z0-9!@#$%^&*' < /dev/urandom | head -c 32)
+BACKUPADMIN_PASS=$(LC_ALL=C tr -dc 'A-Za-z0-9!@#$%^&*' < /dev/urandom | head -c 127)
 
 adduser --gecos "Backup Administrator" --disabled-password "$BACKUPADMIN"
 echo "$BACKUPADMIN:$BACKUPADMIN_PASS" | chpasswd
@@ -45,7 +69,7 @@ pveum aclmod / -user $SERVERADMIN@pam -role Administrator
 pveum aclmod / -user $BACKUPADMIN@pam -role Administrator
 
 # Disable root login in Proxmox Web UI
-echo "Disabling root Web UI access..."
+echo "Disabling root Web UI access at the end of the script..."
 pveum acl delete / -user root@pam 2>/dev/null || true
 pveum role add ConsoleOnly -privs "Sys.Console,Sys.Audit" 2>/dev/null || true
 pveum acl modify / -user root@pam -role ConsoleOnly
@@ -90,8 +114,8 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo "         🔐 TWO-FACTOR AUTHENTICATION (TOTP) SETUP"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-echo "Would you like to enable 2FA (TOTP) for the admin accounts?"
-echo "This adds an extra security layer via authenticator app."
+echo "Would you like to enable 2FA (TOTP) for the admin accounts via remote ssh login?"
+echo "This adds an extra security layer via authenticator app only for SSH not WEBUI!"
 echo ""
 read -p "Enable 2FA for admin users? (y/n): " -n 1 -r
 echo ""
@@ -120,23 +144,6 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
     echo "Manual entry secret: $TOTP_SECRET_SERVER"
     echo ""
     
-    # Same for BackupAdmin
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "Setting up 2FA for: $BACKUPADMIN"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    
-    TOTP_SECRET_BACKUP=$(openssl rand -base64 20 | tr -d '/+=' | cut -c1-16)
-    pveum user tfa add $BACKUPADMIN@pam --type totp --description "BackupAdmin-2FA" 2>/dev/null || true
-    
-    TOTP_URI_BACKUP="otpauth://totp/Proxmox:${BACKUPADMIN}@pam?secret=${TOTP_SECRET_BACKUP}&issuer=Proxmox&algorithm=SHA1&digits=6&period=30"
-    
-    echo ""
-    echo "QR Code for $BACKUPADMIN:"
-    echo "$TOTP_URI_BACKUP" | qrencode -t ANSIUTF8
-    echo ""
-    echo "Manual entry secret: $TOTP_SECRET_BACKUP"
-    echo ""
-    
     # Save 2FA info to credentials file
     cat >> /root/admin_credentials.txt <<EOF
 
@@ -146,10 +153,6 @@ TWO-FACTOR AUTHENTICATION (TOTP)
 PRIMARY ADMIN 2FA:
   Username: $SERVERADMIN@pam
   TOTP Secret: $TOTP_SECRET_SERVER
-  
-BACKUP ADMIN 2FA:
-  Username: $BACKUPADMIN@pam
-  TOTP Secret: $TOTP_SECRET_BACKUP
 
 SETUP INSTRUCTIONS:
 1. Scan QR codes above with authenticator app
@@ -245,6 +248,19 @@ net.ipv4.tcp_syncookies = 1
 net.ipv4.tcp_max_syn_backlog = 2048
 net.ipv4.tcp_synack_retries = 2
 net.ipv4.tcp_syn_retries = 5
+
+# ASLR
+kernel.randomize_va_space = 2
+
+# Restrict dmesg
+kernel.dmesg_restrict = 1
+
+# Restrict kernel pointers
+kernel.kptr_restrict = 2
+
+# Disable magic SysRq
+kernel.sysrq = 0
+
 EOF
 sysctl -p
 echo "✓ Kernel hardened"
@@ -616,6 +632,25 @@ echo ""
 echo "Running security verification..."
 /usr/local/bin/verify-security
 
+#19. Make Emergency Rollback File
+# Create emergency rollback file
+BACKUP_DIR="/root/emergency_backup"
+mkdir -p "$BACKUP_DIR"
+
+# Create restore script
+cat > "$BACKUP_DIR/restore.sh" <<'EOF'
+#!/bin/bash
+set -e  # Exit on any error
+BACKUP_DIR="/root/emergency_backup"
+echo "Restoring from emergency backup..."
+cp "$BACKUP_DIR/sshd_config.backup" /etc/ssh/sshd_config
+systemctl restart sshd
+pveum user modify root@pam --enable 1
+pveum aclmod / -user root@pam -role Administrator
+echo "Root access restored. Reboot recommended."
+EOF
+chmod +x "$BACKUP_DIR/restore.sh"
+
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "            🔒 HARDENING COMPLETE 🔒"
@@ -680,9 +715,13 @@ echo ""
 echo "7. Verify security status anytime with:"
 echo "   verify-security"
 echo ""
+echo "8. Enable 2FA in the WebUI"
+echo "Datacenter ▸ Permissions ▸ Two Factor ▸ Add "TOTP" "
+echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "🔴 SYSTEM REBOOT REQUIRED for all changes to take effect:"
 echo "   reboot"
 echo ""
 echo "Configuration backup saved to: $BACKUP_DIR/"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+pveum user modify root@pam --enable 0
