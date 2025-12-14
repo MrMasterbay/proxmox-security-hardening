@@ -1,5 +1,3 @@
-Basierend auf deinem GitHub Repository erstelle ich dir eine professionelle README.md für dein Proxmox Security Hardening Script:
-
 # Proxmox Security Hardening Script
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
