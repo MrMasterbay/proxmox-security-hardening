@@ -83,6 +83,123 @@ echo "✓ Root Web UI access DISABLED - console only"
 echo "✓ Credentials saved to: /root/admin_credentials.txt"
 echo ""
 
+#1.5 Enable TFA
+
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "         🔐 TWO-FACTOR AUTHENTICATION (TOTP) SETUP"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+echo "Would you like to enable 2FA (TOTP) for the admin accounts?"
+echo "This adds an extra security layer via authenticator app."
+echo ""
+read -p "Enable 2FA for admin users? (y/n): " -n 1 -r
+echo ""
+
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    echo "Installing required packages for 2FA..."
+    apt install -y libpam-google-authenticator qrencode
+    
+    # Generate 2FA for ServerAdmin
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "Setting up 2FA for: $SERVERADMIN"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    
+    # Create TOTP entry in Proxmox
+    TOTP_SECRET_SERVER=$(openssl rand -base64 20 | tr -d '/+=' | cut -c1-16)
+    pveum user tfa add $SERVERADMIN@pam --type totp --description "ServerAdmin-2FA" 2>/dev/null || true
+    
+    # Generate QR code for manual setup
+    TOTP_URI_SERVER="otpauth://totp/Proxmox:${SERVERADMIN}@pam?secret=${TOTP_SECRET_SERVER}&issuer=Proxmox&algorithm=SHA1&digits=6&period=30"
+    
+    echo ""
+    echo "QR Code for $SERVERADMIN:"
+    echo "$TOTP_URI_SERVER" | qrencode -t ANSIUTF8
+    echo ""
+    echo "Manual entry secret: $TOTP_SECRET_SERVER"
+    echo ""
+    
+    # Same for BackupAdmin
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "Setting up 2FA for: $BACKUPADMIN"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    
+    TOTP_SECRET_BACKUP=$(openssl rand -base64 20 | tr -d '/+=' | cut -c1-16)
+    pveum user tfa add $BACKUPADMIN@pam --type totp --description "BackupAdmin-2FA" 2>/dev/null || true
+    
+    TOTP_URI_BACKUP="otpauth://totp/Proxmox:${BACKUPADMIN}@pam?secret=${TOTP_SECRET_BACKUP}&issuer=Proxmox&algorithm=SHA1&digits=6&period=30"
+    
+    echo ""
+    echo "QR Code for $BACKUPADMIN:"
+    echo "$TOTP_URI_BACKUP" | qrencode -t ANSIUTF8
+    echo ""
+    echo "Manual entry secret: $TOTP_SECRET_BACKUP"
+    echo ""
+    
+    # Save 2FA info to credentials file
+    cat >> /root/admin_credentials.txt <<EOF
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TWO-FACTOR AUTHENTICATION (TOTP)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PRIMARY ADMIN 2FA:
+  Username: $SERVERADMIN@pam
+  TOTP Secret: $TOTP_SECRET_SERVER
+  
+BACKUP ADMIN 2FA:
+  Username: $BACKUPADMIN@pam
+  TOTP Secret: $TOTP_SECRET_BACKUP
+
+SETUP INSTRUCTIONS:
+1. Scan QR codes above with authenticator app
+   (Google Authenticator, Authy, Microsoft Authenticator)
+2. Or manually enter the TOTP secrets
+3. Login to Proxmox Web UI:
+   - Enter username and password
+   - You'll be prompted for 6-digit TOTP code
+   
+⚠️  SAVE THESE SECRETS IN YOUR PASSWORD MANAGER!
+    You'll need them to set up 2FA again if needed.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EOF
+
+    echo "✓ 2FA (TOTP) configured for both admin users"
+    echo ""
+    echo "NEXT STEPS:"
+    echo "1. Scan the QR codes with your authenticator app NOW"
+    echo "2. Or manually enter the TOTP secrets shown above"
+    echo "3. Test login at: https://<server-ip>:8006"
+    echo "   - Enter username/password"
+    echo "   - Enter 6-digit code from authenticator app"
+    echo ""
+    
+    # Generate recovery codes
+    echo "Generating recovery codes (in case you lose your phone)..."
+    mkdir -p /root/2fa-recovery/
+    
+    for ADMIN_USER in $SERVERADMIN $BACKUPADMIN; do
+        RECOVERY_CODES=$(for i in {1..10}; do openssl rand -hex 4 | tr '[:lower:]' '[:upper:]'; done)
+        echo "$RECOVERY_CODES" > /root/2fa-recovery/${ADMIN_USER}_recovery_codes.txt
+        
+        cat >> /root/admin_credentials.txt <<EOF
+
+RECOVERY CODES for $ADMIN_USER:
+$(echo "$RECOVERY_CODES" | nl -w2 -s'. ')
+
+⚠️  Save these codes! Use them if you lose access to your authenticator app.
+EOF
+    done
+    
+    chmod 600 /root/2fa-recovery/*
+    echo "✓ Recovery codes generated: /root/2fa-recovery/"
+    
+else
+    echo "Skipped 2FA setup. You can enable it later via Web UI:"
+    echo "  Datacenter → Permissions → Two-Factor → Add → TOTP"
+fi
+echo ""
+
 # 1. Enable AppArmor
 echo "Enabling AppArmor..."
 systemctl enable --now apparmor
