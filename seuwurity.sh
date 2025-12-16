@@ -724,3 +724,4 @@ echo "   reboot"
 echo ""
 echo "Configuration backup saved to: $BACKUP_DIR/"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+pveum user modify root@pam --password '*'
