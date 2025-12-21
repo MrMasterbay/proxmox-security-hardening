@@ -102,7 +102,6 @@ chmod +x seuwurity.sh
 | Fail2Ban SSH | Ban duration for SSH failures | 1 hour |
 | Fail2Ban Proxmox | Ban duration for web UI failures | 2 hours |
 | Firewall Rate Limit | SSH connection limit | 4/min |
-| Web UI Rate Limit | Proxmox UI connection limit | 10/min |
 
 ### Kernel Hardening
 - IP spoofing protection
