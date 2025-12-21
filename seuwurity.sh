@@ -475,7 +475,7 @@ ignoreip = 127.0.0.1/8 ::1
 enabled = true
 port = 2222
 maxretry = 3
-bantime = 7200
+bantime = 86400
 
 
 [proxmox]
@@ -483,8 +483,8 @@ enabled = true
 port = 8006
 filter = proxmox
 backend = systemd
-maxretry = 5
-bantime = 3600
+maxretry = 3
+bantime = 86400
 
 EOF
 
