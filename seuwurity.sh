@@ -1,6 +1,7 @@
+
 #!/bin/bash
-# Proxmox Security Hardening Script v3.0
-# Enhanced with Root WebUI blocking, BackupAdmin, and complete security hardening
+# Proxmox Security Hardening Script v3.2 - FIXED VERSION
+# Rate-limiting auf WebUI entfernt, da es Crashes verursacht
 # Backup configs before running!
 
 set -e
@@ -18,6 +19,7 @@ fi
 echo ""
 echo "⚠️  WARNING: This will disable root SSH and WebUI access!"
 echo "    📌 Ensure you have:"
+echo "       • Console/IPMI/KVM access as backup"
 echo "       • Emergency backup saved"
 echo ""
 read -p "Type 'yes' to continue: " CONFIRM
@@ -29,7 +31,7 @@ fi
 
 echo "✅ Proceeding with security lockdown..."
 
-echo "=== Proxmox Security Hardening v3.0 ==="
+echo "=== Proxmox Security Hardening v3.2 ==="
 echo "Creating backup of configs..."
 BACKUP_DIR="/root/security-backup-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$BACKUP_DIR"
@@ -37,6 +39,37 @@ cp /etc/ssh/sshd_config "$BACKUP_DIR/" 2>/dev/null || true
 cp /etc/default/grub "$BACKUP_DIR/" 2>/dev/null || true
 cp /etc/sysctl.conf "$BACKUP_DIR/" 2>/dev/null || true
 cp /etc/pve/user.cfg "$BACKUP_DIR/" 2>/dev/null || true
+
+# Create emergency restore script FIRST
+cat > /root/emergency-restore.sh <<'RESTORE'
+#!/bin/bash
+echo "=== EMERGENCY RESTORE ==="
+# Reset firewall
+iptables -F
+iptables -P INPUT ACCEPT
+iptables -P FORWARD ACCEPT
+iptables -P OUTPUT ACCEPT
+
+# Reset SSH to default
+sed -i 's/^Port 2222/Port 22/' /etc/ssh/sshd_config
+sed -i 's/^PermitRootLogin no/PermitRootLogin yes/' /etc/ssh/sshd_config
+sed -i '/^AllowUsers/d' /etc/ssh/sshd_config
+systemctl restart sshd
+
+# Restore root access
+pveum user modify root@pam --enable 1
+pveum aclmod / -user root@pam -role Administrator 2>/dev/null || true
+
+# Stop Fail2Ban
+systemctl stop fail2ban
+
+echo "Emergency restore complete!"
+echo "Root SSH on port 22 enabled"
+echo "Root WebUI access enabled"
+echo "Firewall disabled"
+RESTORE
+chmod +x /root/emergency-restore.sh
+echo "✓ Emergency restore script created: /root/emergency-restore.sh"
 
 # 0. Install required packages
 echo "Installing required packages..."
@@ -269,7 +302,7 @@ echo "✓ Kernel hardened"
 echo "Disabling IPv6..."
 sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="nomodeset ipv6.disable=1 quiet"/' /etc/default/grub
 update-grub
-echo 'inet_protocols = ipv4' >> /etc/postfix/main.cf
+echo 'inet_protocols = ipv4' >> /etc/postfix/main.cf 2>/dev/null || true
 
 # 6. Auditd for Logging
 echo "Configuring auditd..."
@@ -356,7 +389,7 @@ APT::Periodic::Download-Upgradeable-Packages "1";
 EOF
 echo "✓ Automatic updates enabled"
 
-# 10. Setup iptables firewall with rate limiting
+# 10. Setup iptables firewall - OHNE RATE LIMITING AUF WEBUI!
 echo "Configuring iptables..."
 
 # Clear existing rules
@@ -372,25 +405,24 @@ iptables -A INPUT -i lo -j ACCEPT
 iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 iptables -A INPUT -p icmp --icmp-type echo-request -j ACCEPT
 
-# SSH with rate limiting (4 attempts per minute)
+# SSH mit Rate limiting (sinnvoll für SSH)
 iptables -A INPUT -p tcp --dport 2222 -m state --state NEW -m recent --set --name SSH
 iptables -A INPUT -p tcp --dport 2222 -m state --state NEW -m recent --update --seconds 60 --hitcount 4 --name SSH -j LOG --log-prefix "SSH-Rate-Limit: "
 iptables -A INPUT -p tcp --dport 2222 -m state --state NEW -m recent --update --seconds 60 --hitcount 4 --name SSH -j DROP
 iptables -A INPUT -p tcp --dport 2222 -j ACCEPT
 
-# Proxmox Web UI (Port 8006) with rate limiting (30 attempts per minute)
-iptables -A INPUT -p tcp --dport 8006 -m state --state NEW -m recent --set --name WEBUI
-iptables -A INPUT -p tcp --dport 8006 -m state --state NEW -m recent --update --seconds 60 --hitcount 30 --name WEBUI -j LOG --log-prefix "WebUI-Rate-Limit: "
-iptables -A INPUT -p tcp --dport 8006 -m state --state NEW -m recent --update --seconds 60 --hitcount 30 --name WEBUI -j DROP
+# Proxmox Web UI (Port 8006) - KEIN Rate Limiting!
+# Das WebUI macht viele API-Calls und würde sonst blockiert
 iptables -A INPUT -p tcp --dport 8006 -j ACCEPT
 
-# Port 8007 (VNC WebSocket)
-iptables -A INPUT -p tcp --dport 8007 -m state --state NEW -m recent --set --name WEBSOCKET
-iptables -A INPUT -p tcp --dport 8007 -m state --state NEW -m recent --update --seconds 60 --hitcount 30 --name WEBSOCKET -j DROP
+# Port 8007 (VNC WebSocket) - KEIN Rate Limiting!
 iptables -A INPUT -p tcp --dport 8007 -j ACCEPT
 
 # Spice Proxy
 iptables -A INPUT -p tcp --dport 3128 -j ACCEPT
+
+# VNC Ports für VMs
+iptables -A INPUT -p tcp --dport 5900:5999 -j ACCEPT
 
 # Cluster communication (if cluster is used)
 iptables -A INPUT -p udp --dport 5404:5405 -j ACCEPT  # Corosync
@@ -402,30 +434,47 @@ iptables -P FORWARD ACCEPT  # Important for VMs/Containers!
 iptables -P OUTPUT ACCEPT
 
 # Save rules
+mkdir -p /etc/iptables
 iptables-save > /etc/iptables/rules.v4
-ip6tables-save > /etc/iptables/rules.v6
+ip6tables-save > /etc/iptables/rules.v6 2>/dev/null || true
 
-echo "✓ Firewall configured with rate limiting"
+echo "✓ Firewall configured (ohne Rate-Limiting auf WebUI)"
 
-# 11. Configure Fail2Ban
+# 11. Configure Fail2Ban - FIXED VERSION
 echo "Configuring Fail2Ban..."
+
+# Stop fail2ban first to avoid issues
+systemctl stop fail2ban 2>/dev/null || true
 
 # Create fail2ban directories
 mkdir -p /etc/fail2ban/filter.d
 mkdir -p /etc/fail2ban/jail.d
 
-# Main jail configuration
+# Remove old/broken configs
+rm -f /etc/fail2ban/jail.d/*.conf 2>/dev/null || true
+
+# Create log directory for pveproxy if it doesn't exist
+mkdir -p /var/log/pveproxy
+touch /var/log/pveproxy/access.log 2>/dev/null || true
+
+# Main jail configuration - moderate settings
 cat > /etc/fail2ban/jail.local <<EOF
 [DEFAULT]
+# Ban for 1 hour
 bantime = 3600
+# Look at last 10 minutes
 findtime = 600
-maxretry = 3
-destemail = root@localhost
-action = %(action_mwl)s
+# Allow 5 retries
+maxretry = 5
+# Backend auto-detection
+backend = auto
+# Ignore localhost
+ignoreip = 127.0.0.1/8 ::1
 
 [sshd]
 enabled = true
 port = 2222
+filter = sshd
 logpath = /var/log/auth.log
 maxretry = 3
 bantime = 7200
@@ -437,50 +486,29 @@ filter = proxmox
 logpath = /var/log/daemon.log
 maxretry = 5
 bantime = 3600
-
-[pve-webui]
-enabled = true
-port = 8006
-filter = pve-webui
-logpath = /var/log/pveproxy/access.log
-maxretry = 5
-bantime = 7200
-
-[proxmox-root]
-enabled = true
-port = 8006
-filter = proxmox-root
-logpath = /var/log/pveproxy/access.log
-maxretry = 1
-bantime = 86400
-action = %(action_mwl)s
 EOF
 
-# Proxmox filter
+# Proxmox filter - fixed regex
 cat > /etc/fail2ban/filter.d/proxmox.conf <<EOF
 [Definition]
-failregex = pvedaemon\[.*authentication failure; rhost=<HOST>
+failregex = pvedaemon\[.*authentication (failure|error).*rhost=<HOST>
+            pveproxy\[.*authentication (failure|error).*rhost=<HOST>
 ignoreregex =
+journalmatch = _SYSTEMD_UNIT=pvedaemon.service
 EOF
 
-# PVE WebUI filter
-cat > /etc/fail2ban/filter.d/pve-webui.conf <<EOF
-[Definition]
-failregex = ^<HOST> -.*POST /api2/json/access/ticket HTTP.*401
-ignoreregex =
-EOF
-
-# Root login attempt filter
-cat > /etc/fail2ban/filter.d/proxmox-root.conf <<EOF
-[Definition]
-failregex = pveproxy\[.*authentication failure.*user=root@pam.*rhost=<HOST>
-            ^<HOST> -.*POST /api2/json/access/ticket.*root@pam.*401
-ignoreregex =
-EOF
-
+# Enable and start fail2ban
 systemctl enable fail2ban
-systemctl restart fail2ban
-echo "✓ Fail2Ban configured with root login protection"
+systemctl start fail2ban
+
+# Verify fail2ban is running
+sleep 2
+if systemctl is-active --quiet fail2ban; then
+    echo "✓ Fail2Ban configured and running"
+    fail2ban-client status 2>/dev/null || true
+else
+    echo "⚠ Fail2Ban failed to start - check: journalctl -u fail2ban"
+fi
 
 # 12. Root login monitoring
 echo "Setting up root login monitoring..."
@@ -508,8 +536,10 @@ fi
 EOF
 chmod +x /usr/local/bin/monitor-root-attempts
 
-# Add to crontab
-echo "*/5 * * * * root /usr/local/bin/monitor-root-attempts" >> /etc/crontab
+# Add to crontab (only if not already there)
+if ! grep -q "monitor-root-attempts" /etc/crontab 2>/dev/null; then
+    echo "*/5 * * * * root /usr/local/bin/monitor-root-attempts" >> /etc/crontab
+fi
 
 echo "✓ Root login monitoring configured"
 
@@ -548,7 +578,7 @@ echo "1. Root Access Status:"
 echo -n "   SSH Login: "
 grep -q "^PermitRootLogin no" /etc/ssh/sshd_config && echo "✓ Blocked" || echo "✗ Allowed"
 echo -n "   Web UI: "
-pveum acl list | grep -q "root@pam.*Administrator" && echo "✗ Allowed" || echo "✓ Blocked"
+pveum user list 2>/dev/null | grep -q "root@pam.*1" && echo "✗ Enabled" || echo "✓ Disabled"
 echo ""
 echo "2. Admin Users:"
 pveum user list | grep -E "(ServerAdmin|BackupAdmin)" | awk '{print "   •", \$1}'
@@ -563,9 +593,12 @@ echo ""
 echo "4. Open Ports:"
 ss -tlnp | grep LISTEN | awk '{print "   •", \$4}'
 echo ""
-echo "5. Failed Login Attempts (last 24h):"
-echo -n "   Root attempts: "
-grep -c "root@pam.*authentication failure" /var/log/pveproxy/access.log 2>/dev/null || echo "0"
+echo "5. Fail2Ban Status:"
+fail2ban-client status 2>/dev/null || echo "   Not running"
+echo ""
+echo "6. Firewall Status:"
+echo "   Rate-Limiting nur auf SSH (Port 2222)"
+echo "   WebUI (8006) ohne Rate-Limiting"
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 EOF
@@ -580,13 +613,6 @@ echo ""
 echo "Would you like to install the Proxmox Auto-Update Script?"
 echo "This script will automate system updates and notify you when reboots are required."
 echo ""
-echo "Features:"
-echo "  • Automatic sequential updates of all cluster nodes"
-echo "  • Email notifications with update status"
-echo "  • Reboot requirement detection"
-echo "  • Detailed logging of all actions"
-echo "  • No automatic reboots - you maintain control"
-echo ""
 read -p "Install Proxmox Auto-Update Script? (y/n): " -n 1 -r
 echo ""
 
@@ -594,31 +620,25 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
     echo "Installing Proxmox Auto-Update Script..."
     
     cd /root
-    git clone https://github.com/MrMasterbay/proxmox-auto-update.git
-    cd proxmox-auto-update
-    chmod +x proxmox-auto-update.sh
-    
-    echo ""
-    echo "Configuring Auto-Update Script..."
-    read -p "Enter email address for notifications (or press Enter for root@localhost): " EMAIL_ADDRESS
-    EMAIL_ADDRESS=${EMAIL_ADDRESS:-root@localhost}
-    
-    sed -i "s/MAIL_TO=\"root@localhost\"/MAIL_TO=\"$EMAIL_ADDRESS\"/" /root/proxmox-auto-update/proxmox-auto-update.sh
-    
-    echo ""
-    echo "✓ Proxmox Auto-Update Script installed!"
-    echo ""
-    echo "To schedule automatic updates, add to crontab:"
-    echo "  Daily at 3 AM:   0 3 * * * /root/proxmox-auto-update/proxmox-auto-update.sh"
-    echo "  Weekly Sunday:   0 3 * * 0 /root/proxmox-auto-update/proxmox-auto-update.sh"
-    echo ""
-    echo "Test with: /root/proxmox-auto-update/proxmox-auto-update.sh"
-    echo "Logs at:   /var/log/proxmox-cluster-auto-update.log"
+    git clone https://github.com/MrMasterbay/proxmox-auto-update.git 2>/dev/null || true
+    if [ -d "/root/proxmox-auto-update" ]; then
+        cd proxmox-auto-update
+        chmod +x proxmox-auto-update.sh
+        
+        echo ""
+        echo "Configuring Auto-Update Script..."
+        read -p "Enter email address for notifications (or press Enter for root@localhost): " EMAIL_ADDRESS
+        EMAIL_ADDRESS=${EMAIL_ADDRESS:-root@localhost}
+        
+        sed -i "s/MAIL_TO=\"root@localhost\"/MAIL_TO=\"$EMAIL_ADDRESS\"/" /root/proxmox-auto-update/proxmox-auto-update.sh
+        
+        echo ""
+        echo "✓ Proxmox Auto-Update Script installed!"
+    else
+        echo "⚠ Could not clone repository"
+    fi
 else
-    echo ""
     echo "Skipped Auto-Update Script installation."
-    echo "You can install it later from:"
-    echo "https://github.com/MrMasterbay/proxmox-auto-update"
 fi
 
 # 17. Lynis Security Audit
@@ -632,24 +652,9 @@ echo ""
 echo "Running security verification..."
 /usr/local/bin/verify-security
 
-#19. Make Emergency Rollback File
-# Create emergency rollback file
-BACKUP_DIR="/root/emergency_backup"
-mkdir -p "$BACKUP_DIR"
-
-# Create restore script
-cat > "$BACKUP_DIR/restore.sh" <<'EOF'
-#!/bin/bash
-set -e  # Exit on any error
-BACKUP_DIR="/root/emergency_backup"
-echo "Restoring from emergency backup..."
-cp "$BACKUP_DIR/sshd_config.backup" /etc/ssh/sshd_config
-systemctl restart sshd
-pveum user modify root@pam --enable 1
-pveum aclmod / -user root@pam -role Administrator
-echo "Root access restored. Reboot recommended."
-EOF
-chmod +x "$BACKUP_DIR/restore.sh"
+# 19. Make Emergency Rollback File
+mkdir -p /root/emergency_backup
+cp /etc/ssh/sshd_config /root/emergency_backup/sshd_config.backup 2>/dev/null || true
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -662,8 +667,7 @@ echo "  • $BACKUPADMIN (Backup Administrator)"
 echo ""
 echo "ROOT ACCESS STATUS:"
 echo "  • SSH Login: BLOCKED"
-echo "  • Web UI Login: BLOCKED (Console only)"
-echo "  • Failed root attempts will ban IP for 24 hours"
+echo "  • Web UI Login: WILL BE DISABLED"
 echo ""
 echo "CREDENTIALS SAVED TO:"
 echo "  → /root/admin_credentials.txt"
@@ -677,8 +681,8 @@ echo "  ✓ Auditd logging all system changes"
 echo "  ✓ SSH hardened (Port 2222)"
 echo "  ✓ Sudo timeout & logging configured"
 echo "  ✓ Automatic security updates enabled"
-echo "  ✓ Firewall with rate limiting active"
-echo "  ✓ Fail2Ban protecting SSH & Web UI"
+echo "  ✓ Firewall active (ohne WebUI Rate-Limiting)"
+echo "  ✓ Fail2Ban protecting SSH & WebUI"
 echo "  ✓ Root login monitoring active"
 echo "  ✓ Unnecessary services disabled"
 echo "  ✓ IPv6 disabled"
@@ -716,7 +720,10 @@ echo "7. Verify security status anytime with:"
 echo "   verify-security"
 echo ""
 echo "8. Enable 2FA in the WebUI also for your ROOT USER!"
-echo "Datacenter ▸ Permissions ▸ Two Factor ▸ Add "TOTP" "
+echo "   Datacenter ▸ Permissions ▸ Two Factor ▸ Add TOTP"
+echo ""
+echo "EMERGENCY RESTORE:"
+echo "  /root/emergency-restore.sh"
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "🔴 SYSTEM REBOOT REQUIRED for all changes to take effect:"
@@ -724,4 +731,9 @@ echo "   reboot"
 echo ""
 echo "Configuration backup saved to: $BACKUP_DIR/"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-pveum user modify root@pam --password '*'
+
+# FINAL STEP: Disable root@pam user completely
+echo ""
+echo "Disabling root@pam user in Proxmox..."
+pveum user modify root@pam --enable 0
+echo "✓ root@pam has been disabled"
