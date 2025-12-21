@@ -719,7 +719,7 @@ echo ""
 echo "7. Verify security status anytime with:"
 echo "   verify-security"
 echo ""
-echo "8. Enable 2FA in the WebUI also for your ROOT USER!"
+echo "8. Enable 2FA in the WebUI also for your Serveradmin!"
 echo "   Datacenter ▸ Permissions ▸ Two Factor ▸ Add TOTP"
 echo ""
 echo "EMERGENCY RESTORE:"
@@ -732,8 +732,38 @@ echo ""
 echo "Configuration backup saved to: $BACKUP_DIR/"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# FINAL STEP: Disable root@pam user completely
+# FINAL STEP: Disable root@pam user with confirmation
 echo ""
-echo "Disabling root@pam user in Proxmox..."
-pveum user modify root@pam --enable 0
-echo "✓ root@pam has been disabled"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "         ⚠️  FINAL STEP: DISABLE ROOT USER ⚠️"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+echo "Before we disable the root@pam user, please confirm you have both Passwords of:"
+echo ""
+echo "  📋 ServerAdmin Username: $SERVERADMIN"
+echo "  📋 BackupAdmin Username: $BACKUPADMIN"
+echo ""
+echo "⚠️  WARNING: After this step, root@pam cannot login to WebUI anymore!"
+echo "    You MUST use the admin accounts above. REBOOT IS AFTER HARDENING RECOMMENDED"
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+read -p "Did you copy the ServerAdmin and BackupAdmin passwords? Type 'YES I COPIED THEM' to continue: " FINAL_CONFIRM
+echo ""
+
+if [[ "$FINAL_CONFIRM" == "YES I COPIED THEM" ]]; then
+    echo "Disabling root@pam user in Proxmox..."
+    pveum user modify root@pam --enable 0
+    echo "✓ root@pam has been disabled"
+    echo ""
+    echo "🔒 Security hardening complete! Root user is now disabled."
+    echo ""
+    echo "🔴 SYSTEM REBOOT REQUIRED for all changes to take effect:"
+    echo "   reboot"
+else
+    echo "⚠️  Root user was NOT disabled!"
+    echo ""
+    echo "To manually disable root later, run:"
+    echo "   pveum user modify root@pam --enable 0"
+    echo ""
+    echo "Please copy the credentials first, then run the command above."
+fi
