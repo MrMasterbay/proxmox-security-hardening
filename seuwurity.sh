@@ -474,18 +474,18 @@ ignoreip = 127.0.0.1/8 ::1
 [sshd]
 enabled = true
 port = 2222
-filter = sshd
-logpath = /var/log/auth.log
 maxretry = 3
 bantime = 7200
+
 
 [proxmox]
 enabled = true
 port = 8006
 filter = proxmox
-logpath = /var/log/daemon.log
+backend = systemd
 maxretry = 5
 bantime = 3600
+
 EOF
 
 # Proxmox filter - fixed regex
@@ -494,7 +494,10 @@ cat > /etc/fail2ban/filter.d/proxmox.conf <<EOF
 failregex = pvedaemon\[.*authentication (failure|error).*rhost=<HOST>
             pveproxy\[.*authentication (failure|error).*rhost=<HOST>
 ignoreregex =
-journalmatch = _SYSTEMD_UNIT=pvedaemon.service
+
+[Init]
+journalmatch = _SYSTEMD_UNIT=pvedaemon.service + _SYSTEMD_UNIT=pveproxy.service
+
 EOF
 
 # Enable and start fail2ban
