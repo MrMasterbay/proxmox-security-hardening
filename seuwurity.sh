@@ -7,7 +7,7 @@
 #         ...2 weeks later the script was finally done. Classic. 
 #            so baGStube_Nico or Nico Schmidt or Mr Masterbay my name
 #
-# Disclaimer: This script was developed with lots of coffee, frustration,
+# Disclaimer: This script was developed with lots of Tea, frustration,
 #             and occasional screaming into pillows. No AI was harmed in
 #             the making of this script (because none was used, duh).
 #             Just pure human stupidity and trial-and-error. I hate my life
@@ -344,7 +344,7 @@ case "${1:-}" in
         ;;
     --version|-v)
         echo "Proxmox Security Hardening Script v$SCRIPT_VERSION"
-        echo "Written with blood, sweat, and way too much coffee"
+        echo "Written with blood, sweat, and way too much coffee and black tea still superior"
         echo "Definitely by a human. With hands. Typing. Manually."
         echo "Repository: $GITHUB_REPO_URL"
         exit 0
@@ -727,13 +727,13 @@ fi
 # ══════════════════════════════════════════════════════════════════════════════
 # PACKAGE INSTALLATION
 # Install all required packages
-# This may take a while. Go get some coffee.
+# This may take a while. Go get some coffee or BLACK TEA for godsake.
 # ══════════════════════════════════════════════════════════════════════════════
 
 print_section "📦 Installing Required Packages"
 
 echo ""
-echo "This might take a moment... Time for coffee! ☕"
+echo "This might take a moment... Time for coffee or Black Tea! ☕"
 echo ""
 
 apt update
