@@ -23,10 +23,10 @@ A comprehensive security hardening script for Proxmox VE servers that implements
 
 ### Network Security
 - **SSH Hardening**: 
-  - Custom port (2222)
   - Key-based authentication
   - Rate limiting
   - User restrictions
+  - Root User disabled for non Cluster Communications
 - **Firewall Configuration**:
   - iptables with rate limiting
   - Fail2Ban integration
