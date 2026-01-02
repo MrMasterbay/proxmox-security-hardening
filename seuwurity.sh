@@ -24,10 +24,10 @@ show_support_message() {
     fi
     
     echo "============================================================================"
-    echo "  Debian 13 to Proxmox VE Converter Script"
+    echo "  Proxmox VE Hardening Script"
     echo "  Made by Nico Schmidt (baGStube_Nico)"
     echo ""
-    echo "  Features: Uninstalls Debian 13 Kernel and installs the PVE Kernel"
+    echo "  Features: Hardens your Proxmox VE System as good as possible"
     echo ""
     echo "  Please consider supporting this script development:"
     echo "  💖 Ko-fi: ko-fi.com/bagstube_nico"
