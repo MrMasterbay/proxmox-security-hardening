@@ -9,24 +9,25 @@ A comprehensive security hardening script for Proxmox VE servers that implements
 ## 🛡️ Features
 
 ### User Management
-- **Automated Admin User Creation**: Creates a secure ServerAdmin user with random suffix
-- **Strong Password Generation**: 32-character passwords with special characters
+- **Automated Admin User Creation**: Creates a secure Superadmin and BackupAdmin user with random suffix
+- **Strong Password Generation**: 32-character passwords with special characters for superadmin and 128-characters passwords for BackupAdmin
 - **Proxmox Integration**: Automatically grants Administrator role in Proxmox
-- **Root Access Restriction**: Disables direct root login via SSH
+- **Root Access Restriction**: Disables direct root login via SSH that IP is not whitelisted
+- **2FA enabled for the Superadmin**: TOTP with Google Auth incase someones sneaks your superadmin Password
 
 ### Security Hardening
 - **AppArmor**: Enforces mandatory access control policies
 - **Kernel Hardening**: Implements sysctl security parameters
 - **Auditd**: Comprehensive system auditing and logging
 - **Service Minimization**: Disables unnecessary services (bluetooth, cups, avahi)
-- **IPv6 Disabled**: Complete IPv6 stack deactivation
+- **IPv6 Hardend this time not disabled again**: Complete IPv6 stack hardend like google recommends. Can also be deactivated
 
 ### Network Security
 - **SSH Hardening**: 
   - Key-based authentication
   - Rate limiting
   - User restrictions
-  - Root User disabled for non Cluster Communications
+  - Root User disabled for non Cluster Communications (Allowed IP'S can still access it)
 - **Firewall Configuration**:
   - iptables with rate limiting
   - Fail2Ban integration
@@ -35,7 +36,7 @@ A comprehensive security hardening script for Proxmox VE servers that implements
 
 ### Monitoring & Maintenance
 - **Automatic Updates**: Unattended security updates via apt
-- **Lynis Security Audit**: Generates comprehensive security report
+- I kicked Lynis out the door. I know how evil.
 - **Fail2Ban**: Automatic IP blocking for brute force attempts
 - **Audit Logging**: Monitors critical system files and configurations
 
@@ -97,7 +98,7 @@ chmod +x seuwurity.sh
 ### Network Protection
 | Feature | Description | Default Setting |
 |---------|-------------|-----------------|
-| SSH Port | Custom SSH port | 2222 |
+| SSH Port | SSH port | 22 |
 | SSH Max Auth Tries | Maximum login attempts | 3 |
 | Proxmox Max Auth Tries | Maximum login attempts | 3 |
 | Fail2Ban SSH | Ban duration for SSH failures | 24 hours |
@@ -113,7 +114,7 @@ chmod +x seuwurity.sh
 - Martian packet logging
 
 ### Access Control
-- Root login disabled
+- Root login disabled for nun cluster Communications
 - Password authentication (with strong passwords)
 - Public key authentication enabled
 - Sudo timeout: 5 minutes
@@ -124,28 +125,28 @@ chmod +x seuwurity.sh
 ### 1. Save Credentials
 After installation, immediately save the generated credentials:
 ```bash
-cat /root/serveradmin_credentials.txt
+cat /root/SuperAdmin_credentials.txt
 ```
 Store these in your password manager!
 
 ### 2. Test SSH Access
 Test the new SSH configuration:
 ```bash
-ssh -p 2222 ServerAdmin_XXXXXX@your-server-ip
+ssh -p 22 SuperAdmin_XXXXXX@your-server-ip
 ```
 
 ### 3. Test Proxmox Web UI
 Access the web interface:
 ```
 https://your-server-ip:8006
-Username: ServerAdmin_XXXXXX
+Username: SuperAdmin_XXXXXX
 Password: [from credentials file]
 ```
 
 ### 4. Secure Cleanup
 After confirming access, remove the credentials file:
 ```bash
-shred -u /root/serveradmin_credentials.txt
+shred -u /root/SuperAdmin_credentials.txt
 ```
 
 ### 5. Configure Auto-Updates (Optional)
@@ -191,7 +192,7 @@ systemctl restart sshd
 
 ### SSH Access
 - **NEW SSH PORT**:  22
-- **User access**: Only ServerAdmin_XXXXXX and BackupAdmin_XXXXXX allowed
+- **User access**: Only SuperAdmin_XXXXXX and BackupAdmin_XXXXXX allowed
 - Always test SSH access before closing your current session!
 
 ### Firewall Rules
@@ -204,7 +205,7 @@ The script implements strict firewall rules. Only these ports are open:
 If you lose access:
 1. Use Proxmox console (via IPMI/iDRAC/physical access)
 2. Login as root directly on the console
-3. Check `/root/serveradmin_credentials.txt` for credentials
+3. Check `/root/SuperAdmin_credentials.txt` for credentials
 4. Modify `/etc/ssh/sshd_config` if needed
 
 ## 🐛 Troubleshooting
@@ -243,7 +244,7 @@ systemctl status pveproxy
 pveum user list
 
 # Reset user permissions
-pveum aclmod / -user ServerAdmin_XXXXXX@pam -role Administrator
+pveum aclmod / -user SuperAdmin_XXXXXX@pam -role Administrator
 ```
 
 ## 📊 Monitoring
