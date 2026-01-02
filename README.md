@@ -190,14 +190,13 @@ systemctl restart sshd
 ## ⚠️ Important Notes
 
 ### SSH Access
-- **NEW SSH PORT**: 2222 (not 22)
-- **Root login**: DISABLED
-- **User access**: Only ServerAdmin_XXXXXX allowed
+- **NEW SSH PORT**:  22
+- **User access**: Only ServerAdmin_XXXXXX and BackupAdmin_XXXXXX allowed
 - Always test SSH access before closing your current session!
 
 ### Firewall Rules
 The script implements strict firewall rules. Only these ports are open:
-- **2222**: SSH
+- **22**: SSH
 - **8006**: Proxmox Web UI
 - **ICMP**: Ping responses
 
