@@ -16,6 +16,26 @@ if ! command -v pveum &> /dev/null; then
     exit 1
 fi
 
+# Show support message
+show_support_message() {
+    # Don't show banner if we're in a SSH session (remote execution)
+    if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ] || [ "$TERM" = "dumb" ] || [ "$SHOW_BANNER" = "false" ]; then
+        return
+    fi
+    
+    echo "============================================================================"
+    echo "  Debian 13 to Proxmox VE Converter Script"
+    echo "  Made by Nico Schmidt (baGStube_Nico)"
+    echo ""
+    echo "  Features: Uninstalls Debian 13 Kernel and installs the PVE Kernel"
+    echo ""
+    echo "  Please consider supporting this script development:"
+    echo "  💖 Ko-fi: ko-fi.com/bagstube_nico"
+    echo "  🔗 Links: linktr.ee/bagstube_nico"
+    echo "============================================================================"
+    echo ""
+}
+
 echo ""
 echo "⚠️  WARNING: This will disable root SSH and WebUI access!"
 echo "    📌 Ensure you have:"
@@ -30,6 +50,8 @@ if [[ "$CONFIRM" != "yes" ]]; then
 fi
 
 echo "✅ Proceeding with security lockdown..."
+
+show_support_message
 
 echo "=== Proxmox Security Hardening v3.2 ==="
 echo "Creating backup of configs..."
