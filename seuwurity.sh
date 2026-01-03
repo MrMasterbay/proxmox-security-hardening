@@ -1547,6 +1547,996 @@ else
     print_warning "Fail2Ban might have issues - please check"
 fi
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Lynis Recommendations 
+# Cuz I care because Obamna care.
+# Now enjoy it. 
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LYNIS FIX HELPER FUNCTIONS because I was too lazy. 
+# Yes indeed to lazy to write the same all the time.
+# ══════════════════════════════════════════════════════════════════════════════
+
+ask_user() {
+    local question="$1"
+    read -p "$question (y/n) [y]: " answer
+    answer=${answer:-y}
+    [[ "$answer" =~ ^[YyJj]$ ]]
+}
+
+log_success() {
+    echo -e "${GREEN}✓${NC} $1"
+}
+
+log_warning() {
+    echo -e "${YELLOW}⚠${NC} $1"
+}
+
+log_info() {
+    echo -e "${BLUE}ℹ${NC} $1"
+}
+
+log_error() {
+    echo -e "${RED}✗${NC} $1"
+}
+
+fix_applied() {
+    echo -e "${GREEN}[FIXED]${NC} $1"
+}
+
+fix_skipped() {
+    echo -e "${YELLOW}[SKIPPED]${NC} $1"
+}
+
+#===============================================================================
+# FIX: NETW-2705 - Backup Nameserver
+#===============================================================================
+
+print_section "🌐 NETW-2705: DNS Configuration"
+
+echo ""
+echo "Lynis recommends having at least 2 nameservers configured for redundancy."
+echo "If your primary DNS server fails, the backup ensures continued name resolution."
+echo "This prevents service outages caused by DNS failures."
+echo ""
+
+if ask_user "Do you want to check and configure backup nameservers?"; then
+
+    NAMESERVER_COUNT=$(grep -c "^nameserver" /etc/resolv.conf 2>/dev/null || echo "0")
+
+    if [[ "$NAMESERVER_COUNT" -lt 2 ]]; then
+        log_warning "Only $NAMESERVER_COUNT nameserver(s) found"
+        echo ""
+        echo "Select backup nameserver to add:"
+        echo "  1) Cloudflare (1.1.1.1) - Fast, privacy-focused"
+        echo "  2) Google (8.8.8.8) - Reliable, widely used"
+        echo "  3) Quad9 (9.9.9.9) - Security-focused, blocks malware"
+        echo "  4) Custom IP"
+        echo ""
+        read -p "Your choice [1-4]: " dns_choice
+        
+        case $dns_choice in
+            1) BACKUP_DNS="1.1.1.1" ;;
+            2) BACKUP_DNS="8.8.8.8" ;;
+            3) BACKUP_DNS="9.9.9.9" ;;
+            4) 
+                read -p "Enter custom DNS IP: " BACKUP_DNS
+                ;;
+            *) 
+                BACKUP_DNS=""
+                ;;
+        esac
+        
+        if [[ -n "$BACKUP_DNS" ]]; then
+            if ! grep -q "nameserver $BACKUP_DNS" /etc/resolv.conf; then
+                echo "nameserver $BACKUP_DNS" >> /etc/resolv.conf
+                log_success "Backup nameserver $BACKUP_DNS added"
+                fix_applied "NETW-2705"
+            else
+                log_info "Nameserver $BACKUP_DNS already present"
+            fi
+        fi
+    else
+        log_success "Already $NAMESERVER_COUNT nameservers configured - No action needed"
+    fi
+
+else
+    fix_skipped "NETW-2705"
+fi
+
+#===============================================================================
+# FIX: MAIL-8818 - Postfix Banner
+#===============================================================================
+
+print_section "📧 MAIL-8818: Postfix Banner Hardening"
+
+echo ""
+echo "Mail server banners can reveal software version information to attackers."
+echo "This information helps attackers identify known vulnerabilities in your"
+echo "specific Postfix version. Anonymizing the banner hides this information"
+echo "while maintaining full mail server functionality."
+echo ""
+
+if ask_user "Do you want to check and anonymize the Postfix banner?"; then
+
+    if command -v postconf &> /dev/null; then
+        CURRENT_BANNER=$(postconf -h smtpd_banner 2>/dev/null || echo "")
+        
+        if echo "$CURRENT_BANNER" | grep -qiE "(postfix|debian|ubuntu|proxmox)"; then
+            log_warning "Postfix banner contains software information"
+            echo "Current banner: $CURRENT_BANNER"
+            echo ""
+            echo "New banner will be: \$myhostname ESMTP"
+            
+            postconf -e "smtpd_banner = \$myhostname ESMTP"
+            systemctl reload postfix 2>/dev/null || true
+            log_success "Postfix banner anonymized"
+            fix_applied "MAIL-8818"
+        else
+            log_success "Postfix banner already clean - No action needed"
+        fi
+    else
+        log_info "Postfix not installed - Skipping"
+    fi
+
+else
+    fix_skipped "MAIL-8818"
+fi
+
+#===============================================================================
+# FIX: AUTH-9230 - Password Hashing Rounds
+#===============================================================================
+
+print_section "🔐 AUTH-9230: Password Hashing Rounds"
+
+echo ""
+echo "Password hashing rounds determine how many times the hash algorithm is applied."
+echo "More rounds = slower to compute = harder to brute-force attack."
+echo "The recommended settings are:"
+echo "  - Minimum rounds: 5000 (ensures adequate security)"
+echo "  - Maximum rounds: 500000 (prevents excessive CPU usage)"
+echo ""
+echo "This only affects newly created or changed passwords."
+echo ""
+
+if ask_user "Do you want to configure password hashing rounds?"; then
+
+    if ! grep -q "^SHA_CRYPT_MIN_ROUNDS" /etc/login.defs; then
+        log_warning "Password hashing rounds not configured"
+        
+        cat >> /etc/login.defs << 'EOF'
+
+# Lynis AUTH-9230: Password hashing rounds
+SHA_CRYPT_MIN_ROUNDS 5000
+SHA_CRYPT_MAX_ROUNDS 500000
+EOF
+        log_success "Password hashing rounds configured (5000-500000)"
+        fix_applied "AUTH-9230"
+    else
+        log_success "Password hashing already configured - No action needed"
+    fi
+
+else
+    fix_skipped "AUTH-9230"
+fi
+
+#===============================================================================
+# FIX: AUTH-9262 - PAM Password Quality
+#===============================================================================
+
+print_section "🔑 AUTH-9262: PAM Password Quality Requirements"
+
+echo ""
+echo "libpam-pwquality enforces strong password policies system-wide."
+echo "When installed and configured, it will require:"
+echo "  - Minimum 12 characters length"
+echo "  - At least 1 uppercase letter"
+echo "  - At least 1 lowercase letter"
+echo "  - At least 1 number"
+echo "  - At least 1 special character"
+echo "  - No dictionary words"
+echo "  - No more than 3 repeated characters"
+echo ""
+echo "This prevents users from setting weak passwords."
+echo ""
+
+if ask_user "Do you want to install and configure password quality requirements?"; then
+
+    if ! dpkg -l | grep -q "libpam-pwquality"; then
+        log_warning "libpam-pwquality not installed"
+        
+        apt-get update -qq
+        apt-get install -y libpam-pwquality
+        
+        cat > /etc/security/pwquality.conf << 'EOF'
+# Lynis AUTH-9262: Password quality requirements
+minlen = 12
+dcredit = -1
+ucredit = -1
+lcredit = -1
+ocredit = -1
+minclass = 3
+maxrepeat = 3
+gecoscheck = 1
+dictcheck = 1
+EOF
+        log_success "libpam-pwquality installed and configured"
+        fix_applied "AUTH-9262"
+    else
+        log_success "libpam-pwquality already installed - No action needed"
+    fi
+
+else
+    fix_skipped "AUTH-9262"
+fi
+
+#===============================================================================
+# FIX: AUTH-9286 - Password Aging
+#===============================================================================
+
+print_section "📅 AUTH-9286: Password Aging Policy"
+
+echo ""
+echo "Password aging forces users to change passwords regularly."
+echo "This limits the window of opportunity if a password is compromised."
+echo "Recommended settings:"
+echo "  - Maximum age: 365 days (must change at least yearly)"
+echo "  - Minimum age: 1 day (prevents rapid cycling back to old password)"
+echo "  - Warning: 14 days (gives users time to prepare)"
+echo ""
+echo "This only affects new users; existing users need 'chage' command."
+echo ""
+
+if ask_user "Do you want to configure password aging policy?"; then
+
+    CURRENT_MAX=$(grep "^PASS_MAX_DAYS" /etc/login.defs | awk '{print $2}')
+    CURRENT_MIN=$(grep "^PASS_MIN_DAYS" /etc/login.defs | awk '{print $2}')
+
+    if [[ "$CURRENT_MAX" == "99999" ]] || [[ -z "$CURRENT_MIN" ]] || [[ "$CURRENT_MIN" == "0" ]]; then
+        log_warning "Password aging not properly configured"
+        echo "Current: MAX=$CURRENT_MAX days, MIN=$CURRENT_MIN days"
+        
+        sed -i 's/^PASS_MAX_DAYS.*/PASS_MAX_DAYS   365/' /etc/login.defs
+        sed -i 's/^PASS_MIN_DAYS.*/PASS_MIN_DAYS   1/' /etc/login.defs
+        sed -i 's/^PASS_WARN_AGE.*/PASS_WARN_AGE   14/' /etc/login.defs
+        log_success "Password aging configured (Max: 365, Min: 1, Warn: 14)"
+        fix_applied "AUTH-9286"
+    else
+        log_success "Password aging already configured - No action needed"
+    fi
+
+else
+    fix_skipped "AUTH-9286"
+fi
+
+#===============================================================================
+# FIX: AUTH-9328 - Default Umask
+#===============================================================================
+
+print_section "📁 AUTH-9328: Default Umask (File Permission Mask)"
+
+echo ""
+echo "Umask controls the default permissions for newly created files."
+echo "  - 022 = New files are readable by everyone (rwxr-xr-x for dirs)"
+echo "  - 027 = New files are only readable by owner and group (rwxr-x--- for dirs)"
+echo ""
+echo "A stricter umask (027) prevents other users from reading your files"
+echo "by default, improving confidentiality."
+echo ""
+
+if ask_user "Do you want to tighten the default umask from 022 to 027?"; then
+
+    CURRENT_UMASK=$(grep "^UMASK" /etc/login.defs | awk '{print $2}')
+
+    if [[ "$CURRENT_UMASK" == "022" ]] || [[ -z "$CURRENT_UMASK" ]]; then
+        log_warning "Umask is $CURRENT_UMASK (permissive)"
+        
+        sed -i 's/^UMASK.*/UMASK           027/' /etc/login.defs
+        
+        if ! grep -q "^umask 027" /etc/profile; then
+            echo "umask 027" >> /etc/profile
+        fi
+        
+        log_success "Umask set to 027"
+        fix_applied "AUTH-9328"
+    else
+        log_success "Umask already tightened ($CURRENT_UMASK) - No action needed"
+    fi
+
+else
+    fix_skipped "AUTH-9328"
+fi
+
+#===============================================================================
+# FIX: PKGS-7346 - Old Package Cleanup
+#===============================================================================
+
+print_section "📦 PKGS-7346: Old Package Configuration Cleanup"
+
+echo ""
+echo "When packages are removed (but not purged), their configuration files"
+echo "remain on the system. These residual configs can:"
+echo "  - Contain outdated/insecure settings"
+echo "  - Cause confusion during reinstallation"
+echo "  - Waste disk space"
+echo ""
+echo "This fix removes configuration files from already-uninstalled packages."
+echo ""
+
+if ask_user "Do you want to clean up old package configurations?"; then
+
+    RESIDUAL=$(dpkg -l | grep "^rc" | wc -l)
+
+    if [[ "$RESIDUAL" -gt 0 ]]; then
+        log_warning "$RESIDUAL packages with residual config found"
+        echo ""
+        echo "Packages to clean:"
+        dpkg -l | grep "^rc" | awk '{print "  - " $2}'
+        echo ""
+        
+        dpkg -l | grep "^rc" | awk '{print $2}' | xargs -r dpkg --purge
+        apt-get autoremove -y
+        apt-get autoclean -y
+        log_success "Old packages cleaned up"
+        fix_applied "PKGS-7346"
+    else
+        log_success "No residual configs found - No action needed"
+    fi
+
+else
+    fix_skipped "PKGS-7346"
+fi
+
+#===============================================================================
+# FIX: PKGS-7370 - debsums Package Verification
+#===============================================================================
+
+print_section "✅ PKGS-7370: Package Verification Tool (debsums)"
+
+echo ""
+echo "debsums verifies installed package files against their MD5 checksums."
+echo "This helps detect:"
+echo "  - Corrupted files (disk errors, failed updates)"
+echo "  - Tampered files (malware, rootkits)"
+echo "  - Accidentally modified system files"
+echo ""
+echo "After installation, run 'debsums -c' to check for modified files."
+echo ""
+
+if ask_user "Do you want to install debsums for package verification?"; then
+
+    if ! command -v debsums &> /dev/null; then
+        log_warning "debsums not installed"
+        
+        apt-get update -qq
+        apt-get install -y debsums
+        log_success "debsums installed"
+        log_info "Tip: Run 'debsums -c' to find modified package files"
+        fix_applied "PKGS-7370"
+    else
+        log_success "debsums already installed - No action needed"
+    fi
+
+else
+    fix_skipped "PKGS-7370"
+fi
+
+#===============================================================================
+# FIX: BANN-7126 - Local Login Banner (/etc/issue)
+#===============================================================================
+
+print_section "⚠️ BANN-7126: Local Login Banner (/etc/issue)"
+
+echo ""
+echo "A legal warning banner is displayed before login at the local console."
+echo "This banner:"
+echo "  - Warns unauthorized users that access is prohibited"
+echo "  - States that activities may be monitored and logged"
+echo "  - Provides legal protection by establishing authorized use policy"
+echo ""
+echo "This is required by many security compliance frameworks (PCI-DSS, HIPAA, etc.)"
+echo ""
+
+if ask_user "Do you want to set a legal warning banner for local login?"; then
+
+    BANNER_TEXT="***************************************************************************
+                           AUTHORIZED ACCESS ONLY
+                           
+This system is for authorized use only. All activities are monitored and
+logged. Unauthorized access will be prosecuted to the fullest extent of law.
+***************************************************************************"
+
+    if [[ ! -s /etc/issue ]] || ! grep -q "AUTHORIZED" /etc/issue 2>/dev/null; then
+        log_warning "/etc/issue has no legal banner"
+        
+        echo "$BANNER_TEXT" > /etc/issue
+        log_success "Banner set in /etc/issue"
+        fix_applied "BANN-7126"
+    else
+        log_success "/etc/issue banner already present - No action needed"
+    fi
+
+else
+    fix_skipped "BANN-7126"
+fi
+
+#===============================================================================
+# FIX: BANN-7130 - Remote Login Banner (/etc/issue.net)
+#===============================================================================
+
+print_section "⚠️ BANN-7130: Remote Login Banner (/etc/issue.net)"
+
+echo ""
+echo "A legal warning banner is displayed before SSH/remote login."
+echo "This is the network equivalent of /etc/issue and serves the same purpose."
+echo ""
+echo "Note: SSH must be configured with 'Banner /etc/issue.net' to display this."
+echo "(The SSH hardening section handles this configuration.)"
+echo ""
+
+if ask_user "Do you want to set a legal warning banner for remote login?"; then
+
+    BANNER_TEXT="***************************************************************************
+                           AUTHORIZED ACCESS ONLY
+                           
+This system is for authorized use only. All activities are monitored and
+logged. Unauthorized access will be prosecuted to the fullest extent of law.
+***************************************************************************"
+
+    if [[ ! -s /etc/issue.net ]] || ! grep -q "AUTHORIZED" /etc/issue.net 2>/dev/null; then
+        log_warning "/etc/issue.net has no legal banner"
+        
+        echo "$BANNER_TEXT" > /etc/issue.net
+        log_success "Banner set in /etc/issue.net"
+        fix_applied "BANN-7130"
+    else
+        log_success "/etc/issue.net banner already present - No action needed"
+    fi
+
+else
+    fix_skipped "BANN-7130"
+fi
+
+#===============================================================================
+# FIX: HRDN-7230 - Malware/Rootkit Scanner
+#===============================================================================
+
+print_section "🔍 HRDN-7230: Malware/Rootkit Scanner"
+
+echo ""
+echo "Rootkit scanners detect hidden malware and system compromises."
+echo "Available options:"
+echo "  - rkhunter: Comprehensive scanner, checks for rootkits, backdoors,"
+echo "              suspicious files, and wrong permissions"
+echo "  - chkrootkit: Lightweight alternative, quick scans"
+echo "  - ClamAV: Full antivirus scanner for files and emails"
+echo ""
+echo "Regular scans help detect compromises early before damage spreads."
+echo ""
+echo "Note: VM disk images (.qcow2, .raw, .vmdk) will be automatically excluded"
+echo "      to prevent false positives and performance issues."
+echo ""
+
+if ask_user "Do you want to install a malware/rootkit scanner?"; then
+
+    echo ""
+    echo "Select scanner to install:"
+    echo "  1) rkhunter (recommended, comprehensive rootkit detection)"
+    echo "  2) chkrootkit (lightweight rootkit scanner)"
+    echo "  3) ClamAV (full antivirus scanner)"
+    echo "  4) rkhunter + ClamAV (recommended combination)"
+    echo "  5) All three scanners"
+    echo ""
+    read -p "Your choice [1-5]: " scanner_choice
+
+    case $scanner_choice in
+        1)
+            if ! command -v rkhunter &> /dev/null; then
+                apt-get update -qq
+                apt-get install -y rkhunter
+                
+                log_info "Configuring rkhunter exclusions for VM disk images..."
+                cat >> /etc/rkhunter.conf.local << 'EOF'
+
+# VM Disk Image Exclusions (Proxmox/KVM)
+EXCLUDE_PATHS="/var/lib/vz/images:/var/lib/vz/template:/var/lib/vz/dump:/var/lib/pve"
+EOF
+                
+                rkhunter --update 2>/dev/null || true
+                rkhunter --propupd 2>/dev/null || true
+                log_success "rkhunter installed with VM exclusions"
+                log_info "Run 'rkhunter --check' for a full scan"
+            else
+                log_success "rkhunter already installed"
+            fi
+            fix_applied "HRDN-7230"
+            ;;
+            
+        2)
+            if ! command -v chkrootkit &> /dev/null; then
+                apt-get update -qq
+                apt-get install -y chkrootkit
+                log_success "chkrootkit installed"
+                log_info "Run 'chkrootkit' for a scan"
+            else
+                log_success "chkrootkit already installed"
+            fi
+            fix_applied "HRDN-7230"
+            ;;
+            
+        3)
+            if ! command -v clamscan &> /dev/null; then
+                apt-get update -qq
+                apt-get install -y clamav clamav-daemon clamav-freshclam
+                
+                log_info "Configuring ClamAV exclusions for VM disk images..."
+                
+                if [[ -f /etc/clamav/clamd.conf ]]; then
+                    cp /etc/clamav/clamd.conf /etc/clamav/clamd.conf.bak.$(date +%Y%m%d)
+                    
+                    cat >> /etc/clamav/clamd.conf << 'EOF'
+
+# VM Disk Image Exclusions (Proxmox/KVM)
+ExcludePath ^/var/lib/vz/images/
+ExcludePath ^/var/lib/vz/template/
+ExcludePath ^/var/lib/vz/dump/
+ExcludePath ^/var/lib/pve/
+ExcludePath \.qcow2$
+ExcludePath \.raw$
+ExcludePath \.vmdk$
+ExcludePath \.iso$
+EOF
+                fi
+                
+                cat > /usr/local/bin/clamscan-safe << 'SCRIPT'
+#!/bin/bash
+EXCLUDE_OPTS=(
+    --exclude='\.qcow2$'
+    --exclude='\.raw$'
+    --exclude='\.vmdk$'
+    --exclude='\.iso$'
+    --exclude-dir='/var/lib/vz/images'
+    --exclude-dir='/var/lib/vz/template'
+    --exclude-dir='/var/lib/vz/dump'
+    --exclude-dir='/var/lib/pve'
+)
+echo "Running ClamAV with VM disk image exclusions..."
+clamscan "${EXCLUDE_OPTS[@]}" "$@"
+SCRIPT
+                chmod +x /usr/local/bin/clamscan-safe
+                
+                log_info "Updating ClamAV virus definitions..."
+                systemctl stop clamav-freshclam 2>/dev/null || true
+                freshclam 2>/dev/null || true
+                systemctl start clamav-freshclam 2>/dev/null || true
+                systemctl enable clamav-daemon 2>/dev/null || true
+                systemctl start clamav-daemon 2>/dev/null || true
+                
+                log_success "ClamAV installed with VM exclusions"
+                log_info "Use 'clamscan-safe -r /path' for scanning"
+            else
+                log_success "ClamAV already installed"
+            fi
+            fix_applied "HRDN-7230"
+            ;;
+            
+        4)
+            apt-get update -qq
+            
+            if ! command -v rkhunter &> /dev/null; then
+                apt-get install -y rkhunter
+                cat >> /etc/rkhunter.conf.local << 'EOF'
+
+# VM Disk Image Exclusions (Proxmox/KVM)
+EXCLUDE_PATHS="/var/lib/vz/images:/var/lib/vz/template:/var/lib/vz/dump:/var/lib/pve"
+EOF
+                rkhunter --update 2>/dev/null || true
+                rkhunter --propupd 2>/dev/null || true
+                log_success "rkhunter installed"
+            fi
+            
+            if ! command -v clamscan &> /dev/null; then
+                apt-get install -y clamav clamav-daemon clamav-freshclam
+                
+                if [[ -f /etc/clamav/clamd.conf ]]; then
+                    cat >> /etc/clamav/clamd.conf << 'EOF'
+
+# VM Disk Image Exclusions (Proxmox/KVM)
+ExcludePath ^/var/lib/vz/images/
+ExcludePath ^/var/lib/vz/template/
+ExcludePath ^/var/lib/vz/dump/
+ExcludePath ^/var/lib/pve/
+ExcludePath \.qcow2$
+ExcludePath \.raw$
+ExcludePath \.vmdk$
+ExcludePath \.iso$
+EOF
+                fi
+                
+                cat > /usr/local/bin/clamscan-safe << 'SCRIPT'
+#!/bin/bash
+EXCLUDE_OPTS=(
+    --exclude='\.qcow2$'
+    --exclude='\.raw$'
+    --exclude='\.vmdk$'
+    --exclude='\.iso$'
+    --exclude-dir='/var/lib/vz/images'
+    --exclude-dir='/var/lib/vz/template'
+    --exclude-dir='/var/lib/vz/dump'
+    --exclude-dir='/var/lib/pve'
+)
+clamscan "${EXCLUDE_OPTS[@]}" "$@"
+SCRIPT
+                chmod +x /usr/local/bin/clamscan-safe
+                
+                systemctl stop clamav-freshclam 2>/dev/null || true
+                freshclam 2>/dev/null || true
+                systemctl start clamav-freshclam 2>/dev/null || true
+                systemctl enable clamav-daemon 2>/dev/null || true
+                
+                log_success "ClamAV installed"
+            fi
+            
+            log_success "rkhunter + ClamAV installed"
+            fix_applied "HRDN-7230"
+            ;;
+            
+        5)
+            apt-get update -qq
+            apt-get install -y rkhunter chkrootkit clamav clamav-daemon clamav-freshclam
+            
+            cat >> /etc/rkhunter.conf.local << 'EOF'
+
+# VM Disk Image Exclusions (Proxmox/KVM)
+EXCLUDE_PATHS="/var/lib/vz/images:/var/lib/vz/template:/var/lib/vz/dump:/var/lib/pve"
+EOF
+            
+            if [[ -f /etc/clamav/clamd.conf ]]; then
+                cat >> /etc/clamav/clamd.conf << 'EOF'
+
+# VM Disk Image Exclusions (Proxmox/KVM)
+ExcludePath ^/var/lib/vz/images/
+ExcludePath ^/var/lib/vz/template/
+ExcludePath ^/var/lib/vz/dump/
+ExcludePath ^/var/lib/pve/
+ExcludePath \.qcow2$
+ExcludePath \.raw$
+ExcludePath \.vmdk$
+ExcludePath \.iso$
+EOF
+            fi
+            
+            cat > /usr/local/bin/clamscan-safe << 'SCRIPT'
+#!/bin/bash
+EXCLUDE_OPTS=(
+    --exclude='\.qcow2$'
+    --exclude='\.raw$'
+    --exclude='\.vmdk$'
+    --exclude='\.iso$'
+    --exclude-dir='/var/lib/vz/images'
+    --exclude-dir='/var/lib/vz/template'
+    --exclude-dir='/var/lib/vz/dump'
+    --exclude-dir='/var/lib/pve'
+)
+clamscan "${EXCLUDE_OPTS[@]}" "$@"
+SCRIPT
+            chmod +x /usr/local/bin/clamscan-safe
+            
+            rkhunter --update 2>/dev/null || true
+            rkhunter --propupd 2>/dev/null || true
+            freshclam 2>/dev/null || true
+            
+            log_success "All scanners installed"
+            fix_applied "HRDN-7230"
+            ;;
+            
+        *)
+            log_warning "Invalid choice"
+            fix_skipped "HRDN-7230"
+            ;;
+    esac
+
+else
+    fix_skipped "HRDN-7230"
+fi
+
+#===============================================================================
+# FIX: FINT-4350 - File Integrity Monitoring (AIDE)
+#===============================================================================
+
+print_section "📋 FINT-4350: File Integrity Monitoring (AIDE)"
+
+echo ""
+echo "AIDE (Advanced Intrusion Detection Environment) monitors file changes."
+echo "It creates a database of file checksums and can detect:"
+echo "  - Modified system binaries (possible trojan/backdoor)"
+echo "  - Changed configuration files"
+echo "  - New unexpected files"
+echo "  - Permission changes"
+echo ""
+echo "Note: Initial database creation takes 5-15 minutes."
+echo "After installation, run 'aide --check' regularly or via cron."
+echo ""
+
+if ask_user "Do you want to install AIDE for file integrity monitoring?"; then
+
+    if ! command -v aide &> /dev/null; then
+        log_warning "AIDE not installed"
+        
+        apt-get update -qq
+        apt-get install -y aide aide-common
+        
+        echo ""
+        log_info "Initializing AIDE database (this may take several minutes)..."
+        aideinit 2>/dev/null || true
+        
+        if [[ -f /var/lib/aide/aide.db.new ]]; then
+            mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+        fi
+        
+        log_success "AIDE installed and initialized"
+        log_info "Tip: Set up daily 'aide --check' via cron"
+        fix_applied "FINT-4350"
+    else
+        log_success "AIDE already installed - No action needed"
+    fi
+
+else
+    fix_skipped "FINT-4350"
+fi
+
+#===============================================================================
+# FIX: ACCT-9622 - Process Accounting (acct)
+#===============================================================================
+
+print_section "📊 ACCT-9622: Process Accounting (acct)"
+
+echo ""
+echo "Process accounting logs information about every process that runs:"
+echo "  - Which commands were executed"
+echo "  - By which user"
+echo "  - How long they ran"
+echo "  - How much CPU/memory they used"
+echo ""
+echo "This is invaluable for forensic analysis after a security incident."
+echo "Commands: 'lastcomm' shows recent commands, 'sa' shows statistics."
+echo ""
+
+if ask_user "Do you want to install process accounting (acct)?"; then
+
+    if ! dpkg -l 2>/dev/null | grep -q " acct "; then
+        log_warning "acct (process accounting) not installed"
+        
+        apt-get update -qq
+        apt-get install -y acct
+        systemctl enable acct 2>/dev/null || true
+        systemctl start acct 2>/dev/null || true
+        log_success "Process accounting enabled"
+        log_info "Use 'lastcomm' to see recent commands"
+        fix_applied "ACCT-9622"
+    else
+        log_success "acct already installed - No action needed"
+    fi
+
+else
+    fix_skipped "ACCT-9622"
+fi
+
+#===============================================================================
+# FIX: ACCT-9626 - System Statistics (sysstat)
+#===============================================================================
+
+print_section "📊 ACCT-9626: System Statistics (sysstat)"
+
+echo ""
+echo "sysstat collects and reports system performance statistics:"
+echo "  - CPU usage over time"
+echo "  - Memory and swap usage"
+echo "  - Disk I/O statistics"
+echo "  - Network statistics"
+echo ""
+echo "Commands: 'sar' shows historical data, 'iostat' shows I/O stats,"
+echo "'mpstat' shows CPU stats. Helps diagnose performance issues."
+echo ""
+
+if ask_user "Do you want to install sysstat for system statistics?"; then
+
+    if ! dpkg -l 2>/dev/null | grep -q " sysstat "; then
+        log_warning "sysstat not installed"
+        
+        apt-get update -qq
+        apt-get install -y sysstat
+        sed -i 's/ENABLED="false"/ENABLED="true"/' /etc/default/sysstat
+        systemctl enable sysstat 2>/dev/null || true
+        systemctl start sysstat 2>/dev/null || true
+        log_success "sysstat installed and enabled"
+        log_info "Use 'sar' to view historical statistics"
+        fix_applied "ACCT-9626"
+    else
+        log_success "sysstat already installed - No action needed"
+    fi
+
+else
+    fix_skipped "ACCT-9626"
+fi
+
+#===============================================================================
+# FIX: NETW-3200 - Disable Unused Network Protocols
+#===============================================================================
+
+print_section "🌐 NETW-3200: Disable Unused Network Protocols"
+
+echo ""
+echo "The Linux kernel includes many network protocols that are rarely used."
+echo "These unused protocols can be exploited if vulnerabilities are found."
+echo "Protocols to disable:"
+echo "  - DCCP: Datagram Congestion Control Protocol (rarely used)"
+echo "  - SCTP: Stream Control Transmission Protocol (telecom-specific)"
+echo "  - RDS: Reliable Datagram Sockets (Oracle cluster-specific)"
+echo "  - TIPC: Transparent Inter-Process Communication (cluster-specific)"
+echo ""
+echo "If you don't know what these are, you probably don't need them."
+echo ""
+
+if ask_user "Do you want to disable unused network protocols?"; then
+
+    if [[ ! -f /etc/modprobe.d/disable-unused-protocols.conf ]]; then
+        log_warning "Unused protocols not disabled"
+        
+        cat > /etc/modprobe.d/disable-unused-protocols.conf << 'EOF'
+# Lynis NETW-3200: Disable unused network protocols
+install dccp /bin/true
+install sctp /bin/true
+install rds /bin/true
+install tipc /bin/true
+EOF
+        log_success "Unused protocols disabled"
+        log_info "Changes take effect after reboot"
+        fix_applied "NETW-3200"
+    else
+        log_success "Unused protocols already disabled - No action needed"
+    fi
+
+else
+    fix_skipped "NETW-3200"
+fi
+
+#===============================================================================
+# FIX: USB-1000/STRG-1846 - USB/Firewire Storage
+#===============================================================================
+
+print_section "💾 USB-1000/STRG-1846: Disable USB/Firewire Storage"
+
+echo ""
+echo "USB and Firewire storage devices can be used to:"
+echo "  - Steal data by copying files to a USB drive"
+echo "  - Introduce malware by plugging in an infected device"
+echo "  - Bypass network security controls"
+echo ""
+echo -e "${YELLOW}⚠️  WARNING: This will completely disable USB storage devices!${NC}"
+echo "   USB keyboards, mice, and other non-storage devices still work."
+echo "   Only enable this on servers that never need USB drives."
+echo ""
+
+if ask_user "Do you want to disable USB and Firewire storage devices?"; then
+
+    if [[ ! -f /etc/modprobe.d/disable-storage.conf ]]; then
+        cat > /etc/modprobe.d/disable-storage.conf << 'EOF'
+# Lynis USB-1000/STRG-1846: Disable USB and Firewire storage
+install usb-storage /bin/true
+install firewire-core /bin/true
+install firewire-ohci /bin/true
+install firewire-sbp2 /bin/true
+EOF
+        log_success "USB/Firewire storage disabled"
+        log_warning "Reboot required for full effect"
+        fix_applied "USB-1000"
+    else
+        log_success "USB/Firewire storage already disabled - No action needed"
+    fi
+
+else
+    fix_skipped "USB-1000"
+fi
+
+#===============================================================================
+# FIX: HRDN-7222 - Restrict Compiler Access
+#===============================================================================
+
+print_section "🔧 HRDN-7222: Restrict Compiler Access"
+
+echo ""
+echo "Compilers (gcc, g++, make) allow creating executable programs."
+echo "If an attacker gains shell access, they could use compilers to:"
+echo "  - Compile exploit code"
+echo "  - Build custom malware"
+echo "  - Create privilege escalation tools"
+echo ""
+echo "Restricting access so only root can use compilers limits this attack vector."
+echo "Note: This may break builds for non-root users if needed."
+echo ""
+
+if ask_user "Do you want to restrict compiler access to root only?"; then
+
+    if command -v gcc &> /dev/null; then
+        GCC_PATH=$(which gcc)
+        GCC_PERMS=$(stat -c %a "$GCC_PATH" 2>/dev/null || echo "755")
+        
+        if [[ "$GCC_PERMS" != "750" ]] && [[ "$GCC_PERMS" != "700" ]]; then
+            log_warning "Compiler accessible to all users"
+            
+            chmod 750 /usr/bin/gcc* 2>/dev/null || true
+            chmod 750 /usr/bin/g++* 2>/dev/null || true
+            chmod 750 /usr/bin/cc 2>/dev/null || true
+            chmod 750 /usr/bin/c++ 2>/dev/null || true
+            chmod 750 /usr/bin/make 2>/dev/null || true
+            log_success "Compiler access restricted to root"
+            fix_applied "HRDN-7222"
+        else
+            log_success "Compiler already restricted - No action needed"
+        fi
+    else
+        log_info "No compiler installed - Skipping"
+    fi
+
+else
+    fix_skipped "HRDN-7222"
+fi
+
+#===============================================================================
+# FIX: Lynis Whitelist for Proxmox
+#===============================================================================
+
+print_section "📝 Lynis Whitelist for Proxmox False Positives"
+
+echo ""
+echo "Some Lynis findings are false positives specific to Proxmox:"
+echo ""
+echo "  NETW-3015: Promiscuous network interfaces"
+echo "    → Proxmox bridges must be promiscuous to forward VM traffic"
+echo ""
+echo "  KRNL-5788: Non-standard kernel location"
+echo "    → Proxmox uses custom pve-kernel with different paths"
+echo ""
+echo "  FILE-6310: Separate partitions for /tmp, /var, etc."
+echo "    → Difficult to change after installation, minimal risk"
+echo ""
+echo "This creates a profile to skip these false positive tests."
+echo ""
+
+if ask_user "Do you want to create a Lynis whitelist for Proxmox?"; then
+
+    if [[ ! -f /etc/lynis/custom.prf ]]; then
+        mkdir -p /etc/lynis
+        
+        cat > /etc/lynis/custom.prf << 'EOF'
+# Proxmox-specific Lynis Whitelist
+# Generated by Lynis Fixes Script
+
+# NETW-3015: Promiscuous interface is normal for Proxmox bridges
+skip-test=NETW-3015
+
+# KRNL-5788: Proxmox uses custom kernel, vmlinuz path differs
+skip-test=KRNL-5788
+
+# FILE-6310: Partitioning is difficult to change retroactively
+skip-test=FILE-6310
+EOF
+        
+        log_success "Lynis whitelist created: /etc/lynis/custom.prf"
+        log_info "Use: lynis audit system --profile /etc/lynis/custom.prf"
+        fix_applied "LYNIS-WHITELIST"
+    else
+        log_success "Lynis whitelist already exists - No action needed"
+    fi
+
+else
+    fix_skipped "LYNIS-WHITELIST"
+fi
+
 # ══════════════════════════════════════════════════════════════════════════════
 # EMERGENCY RESTORE SCRIPT
 # For when everything goes wrong
