@@ -36,9 +36,9 @@ A comprehensive security hardening script for Proxmox VE servers that implements
 
 ### Monitoring & Maintenance
 - **Automatic Updates**: Unattended security updates via apt
-- I kicked Lynis out the door. I know how evil.
 - **Fail2Ban**: Automatic IP blocking for brute force attempts
 - **Audit Logging**: Monitors critical system files and configurations
+- **Lynis recommendations**: Added the recommendations from Lynis in the new version. (Antivirus Systems have excludens for the VM Disks)
 
 ### Optional Features
 - **Proxmox Auto-Update Script**: Integration with automated cluster update system
