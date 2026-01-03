@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Proxmox Security Hardening Script v3.3
+# Proxmox Security Hardening Script v3.4
 # ═══════════════════════════════════════════════════════════════
 #
 # Author: A tired sysadmin who thought "I'll do this quickly" at 3am
@@ -26,6 +26,9 @@
 #   - Root is enabled again. Imaging more dragons.
 #   - We try a update script not sure if that works.
 #
+# Changelog v3.4
+#    - Added the Lynis recommendations as optionals
+#
 # Known "features" (not bugs, just undocumented features):
 #   - Works best when you make a backup first
 #   - Tested on Proxmox 9.1 (other versions: good luck!)
@@ -44,7 +47,7 @@ set -e  # Exit on errors (because I'm too lazy to check every exit code)
 # Here's the version. If you change this without knowing what you're doing,
 # that's your problem, not mine.
 # ══════════════════════════════════════════════════════════════════════════════
-SCRIPT_VERSION="3.3"
+SCRIPT_VERSION="3.4"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/MrMasterbay/proxmox-security-hardening/main/seuwurity.sh"
 GITHUB_REPO_URL="https://github.com/MrMasterbay/proxmox-security-hardening"
 
