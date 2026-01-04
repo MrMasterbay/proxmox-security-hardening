@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Proxmox Security Hardening Script v3.4
+# Proxmox Security Hardening Script v3.5
 # ═══════════════════════════════════════════════════════════════
 #
 # Author: A tired sysadmin who thought "I'll do this quickly" at 3am
@@ -27,7 +27,10 @@
 #   - We try a update script not sure if that works.
 #
 # Changelog v3.4
-#    - Added the Lynis recommendations as optionals
+#    - Added the Lynis recommendations
+#
+# Changelog v3.5
+#   -  Added the CIS recommendations
 #
 # Known "features" (not bugs, just undocumented features):
 #   - Works best when you make a backup first
@@ -47,7 +50,7 @@ set -e  # Exit on errors (because I'm too lazy to check every exit code)
 # Here's the version. If you change this without knowing what you're doing,
 # that's your problem, not mine.
 # ══════════════════════════════════════════════════════════════════════════════
-SCRIPT_VERSION="3.4"
+SCRIPT_VERSION="3.5"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/MrMasterbay/proxmox-security-hardening/main/seuwurity.sh"
 GITHUB_REPO_URL="https://github.com/MrMasterbay/proxmox-security-hardening"
 
@@ -113,6 +116,40 @@ print_error() {
 
 print_info() {
     echo -e "${BLUE}ℹ${NC} $1"
+}
+
+# I moved it up here.
+# So I have a standard instead of making everything diffrent
+
+ask_user() {
+    local question="$1"
+    read -p "$question (y/n) [y]: " answer
+    answer=${answer:-y}
+    [[ "$answer" =~ ^[YyJj]$ ]]
+}
+
+log_success() {
+    echo -e "${GREEN}✓${NC} $1"
+}
+
+log_warning() {
+    echo -e "${YELLOW}⚠${NC} $1"
+}
+
+log_info() {
+    echo -e "${BLUE}ℹ${NC} $1"
+}
+
+log_error() {
+    echo -e "${RED}✗${NC} $1"
+}
+
+fix_applied() {
+    echo -e "${GREEN}[FIXED]${NC} $1"
+}
+
+fix_skipped() {
+    echo -e "${YELLOW}[SKIPPED]${NC} $1"
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -375,6 +412,135 @@ case "${1:-}" in
 esac
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Corosync Time checker
+# We check the time before. Otherwise we have funny little errors.
+# We learn from my mistakes.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+print_section "🕐 TIME-SYNC: Time Synchronization Check"
+
+echo ""
+echo "Time synchronization is CRITICAL for:"
+echo "  - 2FA/TOTP (codes are time-based, ±30 seconds tolerance!)"
+echo "  - Proxmox Cluster (nodes must have synchronized time)"
+echo "  - TLS/SSL Certificates (validation fails with wrong time)"
+echo "  - Log correlation across multiple servers"
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+echo "  📅 Current system date: $(date '+%Y-%m-%d')"
+echo "  🕐 Current system time: $(date '+%H:%M:%S %Z')"
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+echo "  ⚠️  Please verify this matches your actual local time!"
+echo "  If the time is wrong, 2FA will NOT work!"
+echo ""
+
+if ! ask_user "Is the time displayed above CORRECT?"; then
+    echo ""
+    log_error "Time is NOT correct!"
+    echo ""
+    echo "  Please fix the time before continuing."
+    echo ""
+    echo "  Option 1: Install Chrony (recommended)"
+    echo "    apt install chrony && systemctl enable --now chrony"
+    echo "    chronyd -q 'pool pool.ntp.org iburst'" 
+    echo "              systemctl restart chrony"
+    echo ""
+    echo "  Option 2: Set time manually"
+    echo "    timedatectl set-time 'YYYY-MM-DD HH:MM:SS'"
+    echo "    Example: timedatectl set-time '2026-01-04 15:30:00'"
+    echo ""
+    echo "  Option 3: Set timezone"
+    echo "    timedatectl set-timezone Europe/Vienna"
+    echo ""
+    
+    if ask_user "Do you want to install Chrony now to fix time sync?"; then
+        log_info "Installing chrony..."
+        apt-get update -qq
+        apt-get install -y chrony
+        
+        systemctl enable chrony
+        systemctl start chrony
+        
+        log_info "Waiting for time synchronization..."
+        sleep 5
+        
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+        echo "  📅 NEW system date: $(date '+%Y-%m-%d')"
+        echo "  🕐 NEW system time: $(date '+%H:%M:%S %Z')"
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+        
+        if ask_user "Is the time NOW correct?"; then
+            log_success "Time synchronized via Chrony"
+            fix_applied "TIME-SYNC"
+        else
+            log_error "Time still incorrect!"
+            echo ""
+            echo "  Please fix manually and restart the script."
+            echo "  Continuing with wrong time WILL break 2FA!"
+            echo ""
+            
+            if ! ask_user "Continue anyway? (NOT RECOMMENDED!)"; then
+                echo ""
+                echo "Smart choice! Fix the time and run the script again."
+                exit 1
+            else
+                log_warning "Continuing with potentially wrong time..."
+                fix_skipped "TIME-SYNC"
+            fi
+        fi
+    else
+        echo ""
+        if ! ask_user "Continue WITHOUT time sync? (2FA may fail!)"; then
+            echo ""
+            echo "Fix the time and run the script again."
+            exit 1
+        else
+            log_warning "Continuing without time sync - YOU HAVE BEEN WARNED!"
+            fix_skipped "TIME-SYNC"
+        fi
+    fi
+else
+    log_success "Time confirmed correct by user"
+    
+    # Still check if NTP is running for ongoing sync
+    TIME_SYNC_METHOD=""
+    
+    if command -v chronyc &>/dev/null && chronyc tracking &>/dev/null; then
+        TIME_SYNC_METHOD="chrony"
+    elif timedatectl show 2>/dev/null | grep -q "NTPSynchronized=yes"; then
+        TIME_SYNC_METHOD="systemd-timesyncd"
+    elif command -v ntpq &>/dev/null && ntpq -p &>/dev/null; then
+        TIME_SYNC_METHOD="ntpd"
+    fi
+    
+    if [[ -n "$TIME_SYNC_METHOD" ]]; then
+        log_success "Ongoing sync via: $TIME_SYNC_METHOD"
+    else
+        log_warning "No NTP daemon detected - time may drift!"
+        echo ""
+        
+        if ask_user "Install Chrony to keep time synchronized?"; then
+            apt-get update -qq
+            apt-get install -y chrony
+            systemctl enable --now chrony
+            log_success "Chrony installed for ongoing time sync"
+            fix_applied "TIME-SYNC"
+        else
+            log_info "Skipped - remember to sync time periodically!"
+            fix_skipped "TIME-SYNC"
+        fi
+    fi
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
 # MAIN SCRIPT STARTS HERE
 # From here on it gets serious. No going back.
 # (Well, yes. With Ctrl+C. But you get what I mean.)
@@ -417,6 +583,7 @@ echo "    • A backupadmin user will be created"
 echo "    • Optional: 2FA (Google Authenticator) for SSH"
 echo "    • Firewall will be configured"
 echo "    • Fail2Ban will be installed"
+echo "    • CIS and Lynis recommendations"
 echo "    • And much more like Apparmor and Dragons"
 echo ""
 echo "    📌 IMPORTANT:"
@@ -1554,46 +1721,9 @@ fi
 # Now enjoy it. 
 # ══════════════════════════════════════════════════════════════════════════════
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# LYNIS FIX HELPER FUNCTIONS because I was too lazy. 
-# Yes indeed to lazy to write the same all the time.
-# ══════════════════════════════════════════════════════════════════════════════
-
-ask_user() {
-    local question="$1"
-    read -p "$question (y/n) [y]: " answer
-    answer=${answer:-y}
-    [[ "$answer" =~ ^[YyJj]$ ]]
-}
-
-log_success() {
-    echo -e "${GREEN}✓${NC} $1"
-}
-
-log_warning() {
-    echo -e "${YELLOW}⚠${NC} $1"
-}
-
-log_info() {
-    echo -e "${BLUE}ℹ${NC} $1"
-}
-
-log_error() {
-    echo -e "${RED}✗${NC} $1"
-}
-
-fix_applied() {
-    echo -e "${GREEN}[FIXED]${NC} $1"
-}
-
-fix_skipped() {
-    echo -e "${YELLOW}[SKIPPED]${NC} $1"
-}
-
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 # FIX: NETW-2705 - Backup Nameserver
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 
 print_section "🌐 NETW-2705: DNS Configuration"
 
@@ -1647,9 +1777,9 @@ else
     fix_skipped "NETW-2705"
 fi
 
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 # FIX: MAIL-8818 - Postfix Banner
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 
 print_section "📧 MAIL-8818: Postfix Banner Hardening"
 
@@ -1686,9 +1816,9 @@ else
     fix_skipped "MAIL-8818"
 fi
 
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 # FIX: AUTH-9230 - Password Hashing Rounds
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 
 print_section "🔐 AUTH-9230: Password Hashing Rounds"
 
@@ -1723,9 +1853,9 @@ else
     fix_skipped "AUTH-9230"
 fi
 
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 # FIX: AUTH-9262 - PAM Password Quality
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 
 print_section "🔑 AUTH-9262: PAM Password Quality Requirements"
 
@@ -1773,21 +1903,21 @@ else
     fix_skipped "AUTH-9262"
 fi
 
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 # FIX: AUTH-9286 - Password Aging
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 
 print_section "📅 AUTH-9286: Password Aging Policy"
 
 echo ""
 echo "Password aging forces users to change passwords regularly."
 echo "This limits the window of opportunity if a password is compromised."
-echo "Recommended settings:"
+echo ""
+echo "Settings:"
 echo "  - Maximum age: 365 days (must change at least yearly)"
 echo "  - Minimum age: 1 day (prevents rapid cycling back to old password)"
-echo "  - Warning: 14 days (gives users time to prepare)"
-echo ""
-echo "This only affects new users; existing users need 'chage' command."
+echo "  - Warning: 30 days before expiry"
+echo "  - Daily email notifications starting 30 days before expiry"
 echo ""
 
 if ask_user "Do you want to configure password aging policy?"; then
@@ -1797,24 +1927,123 @@ if ask_user "Do you want to configure password aging policy?"; then
 
     if [[ "$CURRENT_MAX" == "99999" ]] || [[ -z "$CURRENT_MIN" ]] || [[ "$CURRENT_MIN" == "0" ]]; then
         log_warning "Password aging not properly configured"
-        echo "Current: MAX=$CURRENT_MAX days, MIN=$CURRENT_MIN days"
         
         sed -i 's/^PASS_MAX_DAYS.*/PASS_MAX_DAYS   365/' /etc/login.defs
         sed -i 's/^PASS_MIN_DAYS.*/PASS_MIN_DAYS   1/' /etc/login.defs
-        sed -i 's/^PASS_WARN_AGE.*/PASS_WARN_AGE   14/' /etc/login.defs
-        log_success "Password aging configured (Max: 365, Min: 1, Warn: 14)"
-        fix_applied "AUTH-9286"
+        sed -i 's/^PASS_WARN_AGE.*/PASS_WARN_AGE   30/' /etc/login.defs
+        
+        log_success "Password aging configured (Max: 365, Min: 1, Warn: 30)"
     else
-        log_success "Password aging already configured - No action needed"
+        log_success "Password aging already configured"
     fi
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Daily Email Warnings
+    # ─────────────────────────────────────────────────────────────────────────
+    echo ""
+    if ask_user "Enable daily email warnings for expiring passwords?"; then
+        
+        read -p "Enter notification email address: " NOTIFY_EMAIL
+        
+        if [[ -z "$NOTIFY_EMAIL" ]]; then
+            log_warning "No email provided - skipping"
+        else
+            # Create check script
+            cat > /usr/local/bin/check-password-expiry.sh <<EXPIRYSCRIPT
+#!/bin/bash
+# Password Expiry Check - Generated by seuwurity.sh
+# Runs daily, warns 30 days before expiry
+
+NOTIFY_EMAIL="$NOTIFY_EMAIL"
+WARN_DAYS=30
+HOSTNAME=\$(hostname -f)
+TODAY=\$(date +%s)
+LOG="/var/log/password-expiry-check.log"
+
+echo "\$(date '+%Y-%m-%d %H:%M:%S') - Check started" >> "\$LOG"
+
+# Check these users
+USERS="root"
+# Add users with UID >= 1000
+USERS="\$USERS \$(awk -F: '\$3 >= 1000 && \$3 < 65534 {print \$1}' /etc/passwd)"
+
+CRITICAL=""
+WARNINGS=""
+
+for USER in \$USERS; do
+    EXPIRY=\$(chage -l "\$USER" 2>/dev/null | grep "Password expires" | cut -d: -f2 | xargs)
+    
+    [[ "\$EXPIRY" == "never" || -z "\$EXPIRY" ]] && continue
+    
+    EXPIRY_SEC=\$(date -d "\$EXPIRY" +%s 2>/dev/null) || continue
+    DAYS_LEFT=\$(( (EXPIRY_SEC - TODAY) / 86400 ))
+    
+    if [[ \$DAYS_LEFT -le 0 ]]; then
+        CRITICAL="\${CRITICAL}⛔ \$USER - EXPIRED \$((\$DAYS_LEFT * -1)) days ago!\n"
+    elif [[ \$DAYS_LEFT -le 7 ]]; then
+        CRITICAL="\${CRITICAL}🔴 \$USER - Expires in \$DAYS_LEFT days (\$EXPIRY)\n"
+    elif [[ \$DAYS_LEFT -le \$WARN_DAYS ]]; then
+        WARNINGS="\${WARNINGS}⚠️  \$USER - Expires in \$DAYS_LEFT days (\$EXPIRY)\n"
+    fi
+done
+
+# Send email if needed
+if [[ -n "\$CRITICAL" || -n "\$WARNINGS" ]]; then
+    SUBJECT="[\${HOSTNAME}] Password Expiry Warning"
+    [[ -n "\$CRITICAL" ]] && SUBJECT="[\${HOSTNAME}] ⛔ CRITICAL: Passwords Expiring!"
+    
+    {
+        echo "Password Expiry Report - \${HOSTNAME}"
+        echo "Date: \$(date)"
+        echo ""
+        [[ -n "\$CRITICAL" ]] && echo -e "CRITICAL:\n\$CRITICAL"
+        [[ -n "\$WARNINGS" ]] && echo -e "WARNINGS:\n\$WARNINGS"
+        echo ""
+        echo "To change: passwd <username>"
+        echo "To check:  chage -l <username>"
+    } | mail -s "\$SUBJECT" "\$NOTIFY_EMAIL"
+    
+    echo "\$(date '+%Y-%m-%d %H:%M:%S') - Email sent" >> "\$LOG"
+fi
+
+echo "\$(date '+%Y-%m-%d %H:%M:%S') - Check completed" >> "\$LOG"
+EXPIRYSCRIPT
+
+            chmod +x /usr/local/bin/check-password-expiry.sh
+            
+            # Create cron job
+            echo "# Password Expiry Check - Daily 8:00 AM
+0 8 * * * root /usr/local/bin/check-password-expiry.sh >/dev/null 2>&1" > /etc/cron.d/password-expiry-check
+            
+            chmod 644 /etc/cron.d/password-expiry-check
+            
+            log_success "Daily check created (8:00 AM → $NOTIFY_EMAIL)"
+            
+            # Apply to existing users
+            echo ""
+            if ask_user "Apply password aging to root, $SUPERADMIN, $BACKUPADMIN?"; then
+                chage -M 365 -m 1 -W 30 root 2>/dev/null && log_success "Applied to: root"
+                id "$SUPERADMIN" &>/dev/null && chage -M 365 -m 1 -W 30 "$SUPERADMIN" 2>/dev/null && log_success "Applied to: $SUPERADMIN"
+                id "$BACKUPADMIN" &>/dev/null && chage -M 365 -m 1 -W 30 "$BACKUPADMIN" 2>/dev/null && log_success "Applied to: $BACKUPADMIN"
+            fi
+            
+            # Test email
+            echo ""
+            if ask_user "Send test email to $NOTIFY_EMAIL?"; then
+                echo "Test from $(hostname) - Password expiry notifications work!" | mail -s "[$(hostname)] Test" "$NOTIFY_EMAIL"
+                log_success "Test email sent - check inbox (and spam)"
+            fi
+        fi
+    fi
+    
+    fix_applied "AUTH-9286"
 else
     fix_skipped "AUTH-9286"
 fi
 
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 # FIX: AUTH-9328 - Default Umask
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 
 print_section "📁 AUTH-9328: Default Umask (File Permission Mask)"
 
@@ -1850,9 +2079,9 @@ else
     fix_skipped "AUTH-9328"
 fi
 
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 # FIX: PKGS-7346 - Old Package Cleanup
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 
 print_section "📦 PKGS-7346: Old Package Configuration Cleanup"
 
@@ -1890,9 +2119,9 @@ else
     fix_skipped "PKGS-7346"
 fi
 
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 # FIX: PKGS-7370 - debsums Package Verification
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 
 print_section "✅ PKGS-7370: Package Verification Tool (debsums)"
 
@@ -1924,9 +2153,9 @@ else
     fix_skipped "PKGS-7370"
 fi
 
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 # FIX: BANN-7126 - Local Login Banner (/etc/issue)
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 
 print_section "⚠️ BANN-7126: Local Login Banner (/etc/issue)"
 
@@ -1963,18 +2192,16 @@ else
     fix_skipped "BANN-7126"
 fi
 
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 # FIX: BANN-7130 - Remote Login Banner (/etc/issue.net)
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 
 print_section "⚠️ BANN-7130: Remote Login Banner (/etc/issue.net)"
 
 echo ""
 echo "A legal warning banner is displayed before SSH/remote login."
-echo "This is the network equivalent of /etc/issue and serves the same purpose."
-echo ""
-echo "Note: SSH must be configured with 'Banner /etc/issue.net' to display this."
-echo "(The SSH hardening section handles this configuration.)"
+echo "NOTE: This banner is ONLY shown to admin users, NOT to root."
+echo "      (Root connections are used for cluster operations)"
 echo ""
 
 if ask_user "Do you want to set a legal warning banner for remote login?"; then
@@ -1987,8 +2214,6 @@ logged. Unauthorized access will be prosecuted to the fullest extent of law.
 ***************************************************************************"
 
     if [[ ! -s /etc/issue.net ]] || ! grep -q "AUTHORIZED" /etc/issue.net 2>/dev/null; then
-        log_warning "/etc/issue.net has no legal banner"
-        
         echo "$BANNER_TEXT" > /etc/issue.net
         log_success "Banner set in /etc/issue.net"
         fix_applied "BANN-7130"
@@ -2000,9 +2225,9 @@ else
     fix_skipped "BANN-7130"
 fi
 
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 # FIX: HRDN-7230 - Malware/Rootkit Scanner
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 
 print_section "🔍 HRDN-7230: Malware/Rootkit Scanner"
 
@@ -2243,9 +2468,9 @@ else
     fix_skipped "HRDN-7230"
 fi
 
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 # FIX: FINT-4350 - File Integrity Monitoring (AIDE)
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 
 print_section "📋 FINT-4350: File Integrity Monitoring (AIDE)"
 
@@ -2288,9 +2513,9 @@ else
     fix_skipped "FINT-4350"
 fi
 
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 # FIX: ACCT-9622 - Process Accounting (acct)
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 
 print_section "📊 ACCT-9622: Process Accounting (acct)"
 
@@ -2325,9 +2550,9 @@ else
     fix_skipped "ACCT-9622"
 fi
 
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 # FIX: ACCT-9626 - System Statistics (sysstat)
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 
 print_section "📊 ACCT-9626: System Statistics (sysstat)"
 
@@ -2363,50 +2588,9 @@ else
     fix_skipped "ACCT-9626"
 fi
 
-#===============================================================================
-# FIX: NETW-3200 - Disable Unused Network Protocols
-#===============================================================================
-
-print_section "🌐 NETW-3200: Disable Unused Network Protocols"
-
-echo ""
-echo "The Linux kernel includes many network protocols that are rarely used."
-echo "These unused protocols can be exploited if vulnerabilities are found."
-echo "Protocols to disable:"
-echo "  - DCCP: Datagram Congestion Control Protocol (rarely used)"
-echo "  - SCTP: Stream Control Transmission Protocol (telecom-specific)"
-echo "  - RDS: Reliable Datagram Sockets (Oracle cluster-specific)"
-echo "  - TIPC: Transparent Inter-Process Communication (cluster-specific)"
-echo ""
-echo "If you don't know what these are, you probably don't need them."
-echo ""
-
-if ask_user "Do you want to disable unused network protocols?"; then
-
-    if [[ ! -f /etc/modprobe.d/disable-unused-protocols.conf ]]; then
-        log_warning "Unused protocols not disabled"
-        
-        cat > /etc/modprobe.d/disable-unused-protocols.conf << 'EOF'
-# Lynis NETW-3200: Disable unused network protocols
-install dccp /bin/true
-install sctp /bin/true
-install rds /bin/true
-install tipc /bin/true
-EOF
-        log_success "Unused protocols disabled"
-        log_info "Changes take effect after reboot"
-        fix_applied "NETW-3200"
-    else
-        log_success "Unused protocols already disabled - No action needed"
-    fi
-
-else
-    fix_skipped "NETW-3200"
-fi
-
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 # FIX: USB-1000/STRG-1846 - USB/Firewire Storage
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 
 print_section "💾 USB-1000/STRG-1846: Disable USB/Firewire Storage"
 
@@ -2442,9 +2626,9 @@ else
     fix_skipped "USB-1000"
 fi
 
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 # FIX: HRDN-7222 - Restrict Compiler Access
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 
 print_section "🔧 HRDN-7222: Restrict Compiler Access"
 
@@ -2486,9 +2670,9 @@ else
     fix_skipped "HRDN-7222"
 fi
 
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 # FIX: Lynis Whitelist for Proxmox
-#===============================================================================
+#══════════════════════════════════════════════════════════════════════════════
 
 print_section "📝 Lynis Whitelist for Proxmox False Positives"
 
@@ -2536,6 +2720,607 @@ EOF
 else
     fix_skipped "LYNIS-WHITELIST"
 fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CIS Benchmark Debian 13 recommendations
+# I found time to look into it. Finally.
+# A few things seem quite useful. Please note that I "borrowed" me the explanations from the official doc.
+# ══════════════════════════════════════════════════════════════════════════════
+
+#══════════════════════════════════════════════════════════════════════════════
+# FIX: CIS 1.1.1.1-1.1.1.5 & 3.2.1-3.2.2  + Lynis NETW-3200 - Disable Unused Kernel Modules
+#══════════════════════════════════════════════════════════════════════════════
+print_section "🧩 CIS 1.1.1 & 3.2 + Lynis NETW-3200 - Disable Unused Kernel Modules"
+
+echo ""
+echo "The Linux kernel can load modules for filesystems and network protocols."
+echo "Unused modules increase the attack surface - vulnerabilities in modules"
+echo "you don't use can still be exploited if they're loadable."
+echo ""
+echo "Filesystem modules to disable:"
+echo "  - cramfs: Compressed ROM filesystem (embedded systems)"
+echo "  - freevxfs: Veritas filesystem (HP-UX)"
+echo "  - hfs/hfsplus: Mac OS filesystems"
+echo "  - jffs2: Flash memory filesystem"
+echo ""
+echo "Network modules to disable:"
+echo "  - atm: Asynchronous Transfer Mode (obsolete)"
+echo "  - can: Controller Area Network (automotive/industrial)"
+echo "  - dccp: Datagram Congestion Control Protocol (rarely used)"
+echo "  - sctp: Stream Control Transmission Protocol (telecom-specific)"
+echo "  - rds: Reliable Datagram Sockets (Oracle cluster-specific)"
+echo "  - tipc: Transparent Inter-Process Communication (cluster-specific)"
+echo ""
+echo "Impact on Proxmox:"
+echo "  - VMs and containers are NOT affected"
+echo "  - These modules are never used by Proxmox according to my knowledge"
+echo "  - Works with pve-kernel (same module system as standard kernel)"
+echo ""
+
+if ask_user "Do you want to disable unused kernel modules?"; then
+
+    if [[ ! -f /etc/modprobe.d/cis-disable-modules.conf ]]; then
+        cat > /etc/modprobe.d/cis-disable-modules.conf <<'EOF'
+# CIS Benchmark: Disable unused kernel modules
+# Generated by Proxmox Security Hardening Script
+
+# ═══════════════════════════════════════════════════════════════
+# Filesystem Modules (CIS 1.1.1.1-1.1.1.5)
+# ═══════════════════════════════════════════════════════════════
+
+install cramfs /bin/false
+blacklist cramfs
+
+install freevxfs /bin/false
+blacklist freevxfs
+
+install hfs /bin/false
+blacklist hfs
+
+install hfsplus /bin/false
+blacklist hfsplus
+
+install jffs2 /bin/false
+blacklist jffs2
+
+# ═══════════════════════════════════════════════════════════════
+# Network Modules (CIS 3.2.1-3.2.2 + Lynis NETW-3200)
+# ═══════════════════════════════════════════════════════════════
+
+install atm /bin/false
+blacklist atm
+
+install can /bin/false
+blacklist can
+
+install dccp /bin/false
+blacklist dccp
+
+install sctp /bin/false
+blacklist sctp
+
+install rds /bin/false
+blacklist rds
+
+install tipc /bin/false
+blacklist tipc
+EOF
+        log_success "Kernel module blacklist created"
+        log_info "Changes take effect after reboot"
+        fix_applied "CIS 1.1.1 & 3.2"
+    else
+        log_success "Kernel module blacklist already exists - No action needed"
+    fi
+
+else
+    fix_skipped "CIS 1.1.1 & 3.2"
+fi
+
+
+#══════════════════════════════════════════════════════════════════════════════
+# FIX: CIS 5.4.3.2 - Shell timeout after 15 minutes of inactivity
+#══════════════════════════════════════════════════════════════════════════════
+
+print_section "⏳ CIS 5.4.3.2 - Shell Timeout"
+
+echo ""
+echo "TMOUT automatically logs out inactive shell sessions."
+echo "This prevents forgotten open terminals from being a security risk."
+echo ""
+echo "How it works:"
+echo "  - After 15 minutes (900 seconds) of no keyboard input"
+echo "  - The shell session is automatically terminated"
+echo "  - Only affects interactive sessions (SSH, local terminal)"
+echo ""
+echo "What is NOT affected:"
+echo "  - Proxmox cluster communication (Corosync, pve-cluster)"
+echo "  - Live migrations, backups, cron jobs"
+echo "  - Any background services or daemons"
+echo ""
+
+if ask_user "Do you want to enable automatic shell timeout after 15 minutes?"; then
+
+    if [[ ! -f /etc/profile.d/cis-timeout.sh ]]; then
+        cat > /etc/profile.d/cis-timeout.sh <<'EOF'
+# CIS 5.4.3.2: Shell Timeout after 15 minutes of inactivity
+TMOUT=900
+readonly TMOUT
+export TMOUT
+EOF
+        chmod 644 /etc/profile.d/cis-timeout.sh
+        log_success "Shell Timeout (15 min) configured"
+        fix_applied "CIS 5.4.3.2"
+    else
+        log_success "Shell Timeout already configured - No action needed"
+    fi
+
+else
+    fix_skipped "CIS 5.4.3.2"
+fi
+
+#══════════════════════════════════════════════════════════════════════════════
+# FIX: CIS 1.5.11-1.5.13 - Disable Core Dumps
+#══════════════════════════════════════════════════════════════════════════════
+
+print_section "🔒 CIS 1.5.11-1.5.13 - Disable Core Dumps"
+
+echo ""
+echo "Core dumps are memory snapshots created when a program crashes."
+echo "They can contain sensitive data like passwords, encryption keys,"
+echo "or other confidential information from memory."
+echo ""
+echo "Security risks of enabled core dumps:"
+echo "  - Attackers can extract secrets from crash dumps"
+echo "  - Debug information helps exploit development"
+echo "  - Disk space exhaustion via large dump files"
+echo ""
+echo "What this fix does:"
+echo "  - Disables core dump storage via systemd"
+echo "  - Sets ProcessSizeMax=0 to prevent dump processing"
+echo "  - Sets hard limit in /etc/security/limits.conf"
+echo ""
+echo "Impact on Proxmox:"
+echo "  - VMs and containers are NOT affected"
+echo "  - Only host-level crashes (which shouldn't happen anyway)"
+echo "  - Debugging becomes harder (but who debugs production servers? Like really guys?)"
+echo ""
+
+if ask_user "Do you want to disable core dumps?"; then
+
+    # Method 1: systemd-coredump
+    if [[ ! -f /etc/systemd/coredump.conf.d/disable-coredump.conf ]]; then
+        mkdir -p /etc/systemd/coredump.conf.d
+        cat > /etc/systemd/coredump.conf.d/disable-coredump.conf <<'EOF'
+# CIS 1.5.11-1.5.13: Disable Core Dumps
+[Coredump]
+Storage=none
+ProcessSizeMax=0
+EOF
+        log_success "Core dumps disabled via systemd"
+    else
+        log_info "systemd coredump config already exists"
+    fi
+
+    # Method 2 according to the CIS Doc: limits.conf (belt and suspenders)
+    if ! grep -q "hard core 0" /etc/security/limits.conf 2>/dev/null; then
+        echo "* hard core 0" >> /etc/security/limits.conf
+        log_success "Core dumps disabled via limits.conf"
+    else
+        log_info "limits.conf already configured"
+    fi
+
+    fix_applied "CIS 1.5.11-1.5.13"
+
+else
+    fix_skipped "CIS 1.5.11-1.5.13"
+fi
+
+#══════════════════════════════════════════════════════════════════════════════
+# FIX: CIS 2.4.1.2-2.4.1.9 & 2.4.2.1 - Cron/At Access Hardening
+#══════════════════════════════════════════════════════════════════════════════
+print_section "📅 CIS 2.4.1.2-2.4.2.1 - Cron/At Access Hardening"
+
+echo ""
+echo "Cron and At are job schedulers that execute commands at specified times."
+echo "If misconfigured, attackers can use them for persistence or privilege escalation."
+echo ""
+echo "What this fix does:"
+echo "  - Restricts cron directories to root only (chmod 700)"
+echo "  - Creates cron.allow/at.allow with only root"
+echo "  - Removes cron.deny/at.deny (allow takes precedence)"
+echo ""
+echo "Affected directories:"
+echo "  - /etc/crontab"
+echo "  - /etc/cron.hourly, cron.daily, cron.weekly, cron.monthly"
+echo "  - /etc/cron.d"
+echo ""
+echo "Impact on Proxmox:"
+echo "  - VMs and containers are NOT affected"
+echo "  - Only root can create/modify cron jobs on the host"
+echo "  - Proxmox scheduled tasks (backups, etc.) still work (they run as root)"
+echo ""
+
+if ask_user "Do you want to harden cron/at access?"; then
+
+    # Restrict cron directories according to doc
+    chmod 700 /etc/crontab 2>/dev/null
+    chmod 700 /etc/cron.hourly 2>/dev/null
+    chmod 700 /etc/cron.daily 2>/dev/null
+    chmod 700 /etc/cron.weekly 2>/dev/null
+    chmod 700 /etc/cron.monthly 2>/dev/null
+    chmod 700 /etc/cron.d 2>/dev/null
+    log_success "Cron directories restricted to root"
+
+    # Create cron.allow (only root)
+    if [[ ! -f /etc/cron.allow ]]; then
+        echo "root" > /etc/cron.allow
+        chmod 640 /etc/cron.allow
+        log_success "cron.allow created (root only)"
+    else
+        log_info "cron.allow already exists"
+    fi
+
+    # Create at.allow (only root)
+    if [[ ! -f /etc/at.allow ]]; then
+        echo "root" > /etc/at.allow
+        chmod 640 /etc/at.allow
+        log_success "at.allow created (root only)"
+    else
+        log_info "at.allow already exists"
+    fi
+
+    # Remove deny files (allow takes precedence anyway)
+    rm -f /etc/cron.deny /etc/at.deny 2>/dev/null
+    log_success "cron.deny/at.deny removed"
+
+    fix_applied "CIS 2.4.1.2-2.4.2.1"
+
+else
+    fix_skipped "CIS 2.4.1.2-2.4.2.1"
+fi
+
+#══════════════════════════════════════════════════════════════════════════════
+# FIX: CIS 5.1.1-5.1.3 - SSH File Permissions Hardening
+#══════════════════════════════════════════════════════════════════════════════
+print_section "🔑 CIS 5.1.1-5.1.3 - SSH File Permissions Hardening"
+
+echo ""
+echo "SSH host keys are used to authenticate the server to clients."
+echo "If private keys are readable by others, attackers can impersonate your server"
+echo "(Man-in-the-Middle attacks) or decrypt captured SSH traffic."
+echo ""
+echo "What this fix does:"
+echo "  - /etc/ssh/sshd_config → 600 (root read/write only)"
+echo "  - /etc/ssh/ssh_host_*_key → 600 (private keys, root only)"
+echo "  - /etc/ssh/ssh_host_*_key.pub → 644 (public keys, world readable)"
+echo "  - All SSH files owned by root:root"
+echo ""
+echo "Impact on Proxmox:"
+echo "  - VMs and containers are NOT affected"
+echo "  - SSH continues to work normally"
+echo "  - Cluster communication unaffected"
+echo ""
+
+if ask_user "Do you want to harden SSH file permissions?"; then
+
+    # sshd_config - only root should read/write
+    chmod 600 /etc/ssh/sshd_config 2>/dev/null
+    chown root:root /etc/ssh/sshd_config 2>/dev/null
+    log_success "sshd_config permissions set (600)"
+
+    # Private host keys - only root should read
+    chmod 600 /etc/ssh/ssh_host_*_key 2>/dev/null
+    chown root:root /etc/ssh/ssh_host_*_key 2>/dev/null
+    log_success "Private host keys permissions set (600)"
+
+    # Public host keys - world readable is fine
+    chmod 644 /etc/ssh/ssh_host_*_key.pub 2>/dev/null
+    chown root:root /etc/ssh/ssh_host_*_key.pub 2>/dev/null
+    log_success "Public host keys permissions set (644)"
+
+    fix_applied "CIS 5.1.1-5.1.3"
+
+else
+    fix_skipped "CIS 5.1.1-5.1.3"
+fi
+
+#══════════════════════════════════════════════════════════════════════════════
+# FIX: CIS 4.2.1.1-4.2.1.4 - Journald Hardening
+#══════════════════════════════════════════════════════════════════════════════
+print_section "📋 CIS 4.2.1.1-4.2.1.4 - Journald Hardening"
+
+echo ""
+echo "Journald is the systemd logging daemon. Proper configuration ensures:"
+echo "  - Logs survive reboots (persistent storage)"
+echo "  - Logs are compressed to save space"
+echo "  - No duplicate forwarding to syslog"
+echo ""
+echo "What this fix does:"
+echo "  - Storage=persistent (logs survive reboot)"
+echo "  - Compress=yes (saves disk space)"
+echo "  - ForwardToSyslog=no (avoids duplicate logs)"
+echo ""
+echo "Impact on Proxmox:"
+echo "  - VMs and containers are NOT affected"
+echo "  - Better forensic capabilities after incidents"
+echo ""
+
+if ask_user "Do you want to harden journald configuration?"; then
+
+    if [[ ! -f /etc/systemd/journald.conf.d/99-cis-hardening.conf ]]; then
+        mkdir -p /etc/systemd/journald.conf.d
+        cat > /etc/systemd/journald.conf.d/99-cis-hardening.conf <<'EOF'
+# CIS 4.2.1.1-4.2.1.4: Journald Hardening
+[Journal]
+Storage=persistent
+Compress=yes
+ForwardToSyslog=no
+EOF
+        systemctl restart systemd-journald
+        log_success "Journald hardened (persistent, compressed)"
+        fix_applied "CIS 4.2.1.1-4.2.1.4"
+    else
+        log_success "Journald already hardened - No action needed"
+    fi
+
+else
+    fix_skipped "CIS 4.2.1.1-4.2.1.4"
+fi
+
+#══════════════════════════════════════════════════════════════════════════════
+# FIX: CIS 5.3.3.1 - Account Lockout with pam_faillock
+#══════════════════════════════════════════════════════════════════════════════
+print_section "🔒 CIS 5.3.3.1 - Account Lockout Policy (pam_faillock)"
+
+echo ""
+echo "pam_faillock locks accounts after failed login attempts."
+echo "This protects against brute-force password attacks."
+echo ""
+echo "Recommended settings:"
+echo "  - deny=5 (lock after 5 failed attempts)"
+echo "  - unlock_time=600 (auto-unlock after 10 minutes)"
+echo "  - fail_interval=900 (count failures within 15 minutes)"
+echo ""
+echo -e "${YELLOW}⚠️  WARNING: Root is excluded to prevent lockout!${NC}"
+echo ""
+echo "Impact on Proxmox:"
+echo "  - VMs and containers are NOT affected"
+echo "  - Protects against brute-force attacks"
+echo "  - Works alongside Fail2Ban"
+echo ""
+
+if ask_user "Do you want to enable account lockout after 5 failed attempts?"; then
+
+    if [[ ! -f /etc/security/faillock.conf.d/cis-faillock.conf ]]; then
+        mkdir -p /etc/security/faillock.conf.d
+        cat > /etc/security/faillock.conf.d/cis-faillock.conf <<'EOF'
+# CIS 5.3.3.1: Account Lockout Policy
+# Lock account after 5 failed attempts
+deny = 5
+
+# Auto-unlock after 10 minutes (600 seconds)
+unlock_time = 600
+
+# Count failures within 15 minutes (900 seconds)
+fail_interval = 900
+
+# Don't lock root (prevents total lockout)
+even_deny_root = false
+
+# Directory for failure records
+dir = /var/run/faillock
+EOF
+        log_success "Account lockout configured (5 attempts, 10 min unlock)"
+        log_info "Root is excluded from lockout for safety"
+        fix_applied "CIS 5.3.3.1"
+    else
+        log_success "Account lockout already configured - No action needed"
+    fi
+
+else
+    fix_skipped "CIS 5.3.3.1"
+fi
+
+#══════════════════════════════════════════════════════════════════════════════
+# FIX: CIS 5.3.3.2 - Password History with pam_pwhistory
+#══════════════════════════════════════════════════════════════════════════════
+print_section "🔑 CIS 5.3.3.2 - Password History (pam_pwhistory)"
+
+echo ""
+echo "pam_pwhistory prevents users from reusing old passwords."
+echo "This stops the common pattern of cycling between 2-3 passwords."
+echo ""
+echo "Recommended setting:"
+echo "  - remember=24 (remember last 24 passwords)"
+echo ""
+echo "Impact on Proxmox:"
+echo "  - VMs and containers are NOT affected"
+echo "  - Only affects password changes on the host"
+echo ""
+
+if ask_user "Do you want to enable password history (remember last 24)?"; then
+
+    if ! grep -q "pam_pwhistory.so" /etc/pam.d/common-password 2>/dev/null; then
+        # Backup first
+        cp /etc/pam.d/common-password /etc/pam.d/common-password.bak.$(date +%Y%m%d)
+        
+        # Add pwhistory before pam_unix
+        sed -i '/pam_unix.so/i password    required    pam_pwhistory.so remember=24 use_authtok' /etc/pam.d/common-password
+        
+        log_success "Password history enabled (remember last 24)"
+        fix_applied "CIS 5.3.3.2"
+    else
+        log_success "Password history already configured - No action needed"
+    fi
+
+else
+    fix_skipped "CIS 5.3.3.2"
+fi
+
+
+#══════════════════════════════════════════════════════════════════════════════
+# FIX: CIS 5.1.4-5.1.22 - SSH Cryptographic Settings
+#══════════════════════════════════════════════════════════════════════════════
+print_section "🔐 CIS 5.1.4-5.1.22 - SSH Cryptographic Hardening"
+
+echo ""
+echo "Modern SSH should use only strong cryptographic algorithms."
+echo "Weak or outdated algorithms can be broken by attackers."
+echo ""
+echo "What this fix adds to sshd_config:"
+echo "  - Strong Ciphers (AES-GCM, AES-CTR only)"
+echo "  - Secure Key Exchange (Curve25519, DH Group 16/18)"
+echo "  - Strong MACs (SHA2-512, SHA2-256 ETM only)"
+echo "  - Disables unused features (GSSAPI, Hostbased, Rhosts)"
+echo "  - Enables verbose logging for security audits"
+echo "  - Sets login banner (/etc/issue.net)"
+echo ""
+echo "Impact on Proxmox:"
+echo "  - VMs and containers are NOT affected"
+echo "  - Very old SSH clients may not connect (good!)"
+echo "  - Cluster communication unaffected"
+echo ""
+
+# Here I did spend Hours q-q. I hope it works now.
+if ask_user "Do you want to apply SSH cryptographic hardening?"; then
+
+    # Check if already applied
+    if grep -q "# CIS SSH Cryptographic Hardening" /etc/ssh/sshd_config 2>/dev/null; then
+        log_success "SSH cryptographic hardening already applied - Skipping"
+    else
+        
+        # Backup
+        BACKUP_FILE="/etc/ssh/sshd_config.backup.crypto.$(date +%Y%m%d_%H%M%S)"
+        cp /etc/ssh/sshd_config "$BACKUP_FILE"
+        log_info "Backed up to: $BACKUP_FILE"
+        
+        # Check OpenSSH version to ensure compatibility
+        SSH_VERSION=$(ssh -V 2>&1 | grep -oP 'OpenSSH_\K[0-9.]+' | cut -d. -f1,2)
+        if awk "BEGIN {exit !($SSH_VERSION >= 7.4)}"; then
+            log_info "OpenSSH version $SSH_VERSION - Compatible"
+        else
+            log_warning "OpenSSH version $SSH_VERSION - May not support all algorithms"
+        fi
+        
+        # Remove existing crypto directives (prevent duplicates)
+        sed -i.pre-crypto \
+            -e '/^Ciphers /d' \
+            -e '/^KexAlgorithms /d' \
+            -e '/^MACs /d' \
+            -e '/^GSSAPIAuthentication /d' \
+            -e '/^HostbasedAuthentication /d' \
+            -e '/^IgnoreRhosts /d' \
+            -e '/^PermitUserEnvironment /d' \
+            -e '/^Banner /d' \
+            /etc/ssh/sshd_config
+        
+        # Find insertion point (before first Match block, or at end)
+        MATCH_LINE=$(grep -n "^Match " /etc/ssh/sshd_config | head -1 | cut -d: -f1)
+        
+        if [ -n "$MATCH_LINE" ]; then
+            # Insert BEFORE Match block
+            INSERT_LINE=$((MATCH_LINE - 1))
+            log_info "Inserting crypto settings before Match block (line $MATCH_LINE)"
+        else
+            # Append at end
+            INSERT_LINE=$(wc -l < /etc/ssh/sshd_config)
+            log_info "Appending crypto settings at end of config"
+        fi
+        
+        # Create hardening block
+        cat > /tmp/ssh_crypto.tmp <<'EOF'
+
+# ═══════════════════════════════════════════════════════════════
+# CIS SSH Cryptographic Hardening (5.1.4-5.1.22)
+# Generated by Proxmox Security Hardening Script
+# ═══════════════════════════════════════════════════════════════
+
+# CIS 5.1.4-5.1.6: Strong Ciphers only
+Ciphers aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr
+
+# CIS 5.1.7-5.1.9: Secure Key Exchange
+KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512
+
+# CIS 5.1.10-5.1.12: Strong MACs
+MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,hmac-sha2-512,hmac-sha2-256
+
+# CIS 5.1.13: Disable GSSAPI Authentication
+GSSAPIAuthentication no
+
+# CIS 5.1.14: Disable Hostbased Authentication
+HostbasedAuthentication no
+
+# CIS 5.1.15: Ignore Rhosts
+IgnoreRhosts yes
+
+# CIS 5.1.18: Disable User Environment
+PermitUserEnvironment no
+
+# CIS 5.1.22: Login Banner
+Banner /etc/issue.net
+EOF
+
+        # Insert crypto block at correct position
+        {
+            head -n "$INSERT_LINE" /etc/ssh/sshd_config
+            cat /tmp/ssh_crypto.tmp
+            tail -n +$((INSERT_LINE + 1)) /etc/ssh/sshd_config
+        } > /etc/ssh/sshd_config.new
+        
+        # Test new configuration
+        if sshd -t -f /etc/ssh/sshd_config.new 2>/dev/null; then
+            log_success "Configuration test passed"
+            
+            # Apply new config
+            mv /etc/ssh/sshd_config.new /etc/ssh/sshd_config
+            
+            # Restart SSH
+            if systemctl restart sshd; then
+                if systemctl is-active --quiet sshd; then
+                    log_success "SSH cryptographic hardening applied"
+                    log_success "Login banner enabled (/etc/issue.net)"
+                    fix_applied "CIS 5.1.4-5.1.22"
+                    
+                    # Test cluster connectivity
+                    if command -v pvecm &>/dev/null; then
+                        echo ""
+                        log_info "Testing cluster connectivity with new crypto..."
+                        CLUSTER_IPS=$(pvecm nodes 2>/dev/null | awk '/^[0-9]/ {print $3}')
+                        for node_ip in $CLUSTER_IPS; do
+                            if timeout 5 ssh -o BatchMode=yes root@$node_ip /bin/true 2>/dev/null; then
+                                log_success "Cluster node $node_ip: OK"
+                            else
+                                log_error "Cluster node $node_ip: FAILED - Check crypto compatibility!"
+                            fi
+                        done
+                    fi
+                else
+                    log_error "SSH failed to start - Rolling back"
+                    cp "$BACKUP_FILE" /etc/ssh/sshd_config
+                    systemctl restart sshd
+                    fix_failed "CIS 5.1.4-5.1.22"
+                fi
+            else
+                log_error "Failed to restart SSH - Rolling back"
+                cp "$BACKUP_FILE" /etc/ssh/sshd_config
+                systemctl restart sshd
+                fix_failed "CIS 5.1.4-5.1.22"
+            fi
+        else
+            log_error "Configuration test failed - Not applied"
+            echo "Error details:"
+            sshd -t -f /etc/ssh/sshd_config.new
+            rm -f /etc/ssh/sshd_config.new
+            fix_failed "CIS 5.1.4-5.1.22"
+        fi
+        
+        # Cleanup
+        rm -f /tmp/ssh_crypto.tmp
+    fi
+else
+    fix_skipped "CIS 5.1.4-5.1.22"
+fi
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # EMERGENCY RESTORE SCRIPT
@@ -2812,8 +3597,7 @@ echo -e "\e[33m║\e[0m                                                         
 echo -e "\e[33m╚══════════════════════════════════════════════════════════════════╝\e[0m"
 echo ""
 ## "Meme Area because I can and people on reddit say "I'm otherwise AI"
-read -p "Wanna see a Secret? (j/n): " GEHEIMNIS
-if [[ "$GEHEIMNIS" == "j" ]]; then
+if ask_user "Wanna see a Secret?"; then
     echo "Brainrot is loading 5%"
     sleep 2
     echo "Brainrot is completing in 10 min"
@@ -2829,9 +3613,10 @@ if [[ "$GEHEIMNIS" == "j" ]]; then
     echo ""
     echo -e "\e[31m    ~ I'm a boykisser ~\e[0m"
     echo ""
+    sleed 2
     echo "Time for the next meme"
     echo "Loading Obamna..."
-    sleep 1
+    sleep 2
     echo ""
     echo "           O B A M N A"
     echo ""
@@ -2866,3 +3651,4 @@ if [[ "$GEHEIMNIS" == "j" ]]; then
 else
     echo "Me sad now 🥺"
 fi
+
