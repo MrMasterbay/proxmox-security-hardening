@@ -40,6 +40,191 @@ A comprehensive security hardening script for Proxmox VE servers that implements
 - **Audit Logging**: Monitors critical system files and configurations
 - **Lynis recommendations**: Added the recommendations from Lynis in the new version. (Antivirus Systems have excludens for the VM Disks)
 
+
+Perfekt! Hier ist die komplette Dokumentation in deinem gewünschten Format:
+
+---
+
+## Security Features
+
+### User Management
+- **Automated Admin User Creation**: Creates a secure Superadmin and BackupAdmin user with random suffix
+- **Strong Password Generation**: 32-character passwords with special characters for Superadmin and 128-character passwords for BackupAdmin
+- **Proxmox Integration**: Automatically grants Administrator role in Proxmox
+- **Root Access Restriction**: Disables direct root login via SSH unless IP is whitelisted
+- **2FA enabled for the Superadmin**: TOTP with Google Authenticator in case someone steals your Superadmin password
+
+### Security Hardening
+- **AppArmor**: Enforces mandatory access control policies
+- **Kernel Hardening**: Implements sysctl security parameters (ASLR, pointer restriction, SYN cookies)
+- **Auditd**: Comprehensive system auditing and logging
+- **Service Minimization**: Disables unnecessary services (bluetooth, cups, avahi)
+- **IPv6 Hardening**: Complete IPv6 stack hardened as recommended. Can also be fully deactivated
+
+### Network Security
+- **SSH Hardening**:
+  - Key-based authentication for root (cluster operations)
+  - Rate limiting (max 3 attempts)
+  - User restrictions via Match blocks
+  - Root disabled except from whitelisted IPs (cluster nodes, jumphosts)
+- **Firewall Configuration**:
+  - iptables with rate limiting
+  - Fail2Ban integration
+  - Dynamic SSH whitelisting
+  - Cluster ports restricted to node IPs only
+- **DDoS Protection**: SYN flood protection and connection limits
+
+### Monitoring & Maintenance
+- **Automatic Updates**: Unattended security updates via apt
+- **Fail2Ban**: Automatic IP blocking for brute force attempts (SSH & Proxmox WebUI)
+- **Audit Logging**: Monitors critical system files and configurations
+- **Emergency Restore**: Script to recover access if locked out
+
+---
+
+## CIS Benchmark Controls
+
+Based on **CIS Debian Linux 13 Benchmark v1.0.0**
+
+### CIS 1.1.1.1-1.1.1.5 - Disable Unused Filesystem Modules
+- **What it does**: Prevents loading of rarely-used filesystem kernel modules (cramfs, freevxfs, hfs, hfsplus, jffs2)
+- **Why it matters**: Vulnerabilities in unused modules can still be exploited if they're loadable
+- **Proxmox Impact**: None - VMs and containers unaffected
+
+### CIS 1.5.11-1.5.13 - Disable Core Dumps
+- **What it does**: Prevents the system from creating memory dumps when programs crash
+- **Why it matters**: Core dumps can contain passwords, encryption keys, and sensitive data
+- **Proxmox Impact**: None - VM crashes still logged normally
+
+### CIS 2.4.1.2-2.4.2.1 - Cron/At Access Hardening
+- **What it does**: Restricts job scheduler access to root only
+- **Why it matters**: Attackers can use cron for persistence or privilege escalation
+- **Proxmox Impact**: None - Proxmox scheduled tasks (backups, etc.) run as root
+
+### CIS 3.2.1-3.2.2 - Disable Unused Network Protocols
+- **What it does**: Prevents loading of rarely-used network protocols (dccp, sctp, rds, tipc, atm, can)
+- **Why it matters**: Known vulnerabilities exist in these rarely-used protocols
+- **Proxmox Impact**: None - These protocols are not used by Proxmox
+
+### CIS 4.2.1.1-4.2.1.4 - Journald Hardening
+- **What it does**: Configures persistent, compressed logging that survives reboots
+- **Why it matters**: Ensures logs are available for forensic analysis after incidents
+- **Proxmox Impact**: Better forensic capabilities
+
+### CIS 5.1.1-5.1.3 - SSH File Permissions
+- **What it does**: Sets secure permissions on SSH config (600) and host keys
+- **Why it matters**: Prevents unauthorized access to SSH configuration and private keys
+- **Proxmox Impact**: None - SSH continues to work normally
+
+### CIS 5.1.4-5.1.22 - SSH Cryptographic Hardening
+- **What it does**: Configures SSH to use only strong ciphers, key exchange algorithms, and MACs
+- **Why it matters**: Weak cryptographic algorithms can be broken by attackers
+- **Settings**:
+  - Strong Ciphers: AES-GCM, AES-CTR only
+  - Secure Key Exchange: Curve25519, DH Group 16/18
+  - Strong MACs: SHA2-512, SHA2-256 ETM
+  - Disables: GSSAPI, Hostbased auth, Rhosts
+- **Proxmox Impact**: Very old SSH clients may not connect (intended behavior)
+- **⚠️ Note**: Banner only shown to admin users, NOT to root (breaks cluster operations otherwise)
+
+### CIS 5.3.3.1 - Account Lockout (pam_faillock)
+- **What it does**: Locks accounts after 5 failed login attempts, auto-unlocks after 10 minutes
+- **Why it matters**: Protects against brute-force password attacks
+- **Proxmox Impact**: Works alongside Fail2Ban for defense in depth
+- **⚠️ Note**: Root is excluded to prevent total lockout
+
+### CIS 5.3.3.2 - Password History (pam_pwhistory)
+- **What it does**: Prevents users from reusing the last 24 passwords
+- **Why it matters**: Stops the common pattern of cycling between 2-3 passwords
+- **Proxmox Impact**: Only affects password changes on the host
+
+### CIS 5.4.3.2 - Shell Timeout
+- **What it does**: Automatically logs out inactive shell sessions after 15 minutes
+- **Why it matters**: Prevents forgotten open terminals from being a security risk
+- **Proxmox Impact**: Only interactive SSH sessions affected - NOT cluster communication, migrations, backups, or cron jobs
+
+---
+
+## Lynis Recommendations
+
+Based on **Lynis Security Auditing Tool**
+
+### NETW-2705 - Backup Nameserver
+- **What it does**: Ensures at least 2 DNS nameservers are configured
+- **Why it matters**: DNS redundancy prevents service outages
+- **Options**: Cloudflare (1.1.1.1), Google (8.8.8.8), Quad9 (9.9.9.9), or custom
+
+### MAIL-8818 - Postfix Banner Hardening
+- **What it does**: Removes software version information from mail server banner
+- **Why it matters**: Version disclosure helps attackers identify vulnerable software
+
+### AUTH-9230 - Password Hashing Rounds
+- **What it does**: Increases SHA password hashing iterations (5000-500000 rounds)
+- **Why it matters**: Makes brute-force attacks significantly slower
+- **Note**: Only affects newly created or changed passwords
+
+### AUTH-9262 - PAM Password Quality
+- **What it does**: Enforces strong password policies (min 12 chars, uppercase, lowercase, digit, special char)
+- **Why it matters**: Prevents users from setting weak passwords
+- **Implementation**: Installs libpam-pwquality
+
+### AUTH-9286 - Password Aging
+- **What it does**: Forces password changes every 365 days with 14-30 day warning
+- **Why it matters**: Limits the window of opportunity if a password is compromised
+- **Optional**: Daily email notifications for expiring passwords
+
+### AUTH-9328 - Default Umask
+- **What it does**: Tightens default file permissions from 022 to 027
+- **Why it matters**: New files are only readable by owner and group, not everyone
+
+### PKGS-7346 - Old Package Cleanup
+- **What it does**: Removes configuration files from uninstalled packages
+- **Why it matters**: Residual configs can contain outdated/insecure settings
+
+### PKGS-7370 - Package Verification (debsums)
+- **What it does**: Installs tool to verify package file integrity
+- **Why it matters**: Detects corrupted or tampered system files
+
+### BANN-7126 & BANN-7130 - Login Banners
+- **What it does**: Displays legal warning banner before login (local and SSH)
+- **Why it matters**: Required by compliance frameworks (PCI-DSS, HIPAA, etc.)
+- **⚠️ Note**: SSH banner only shown to admin users, NOT to root (breaks cluster operations otherwise)
+
+### HRDN-7230 - Malware/Rootkit Scanner
+- **What it does**: Installs rkhunter, chkrootkit, and/or ClamAV
+- **Why it matters**: Detects hidden malware and system compromises
+- **Proxmox-specific**: VM disk images (.qcow2, .raw, .vmdk) automatically excluded to prevent false positives
+
+### FINT-4350 - File Integrity Monitoring (AIDE)
+- **What it does**: Creates database of file checksums to detect unauthorized changes
+- **Why it matters**: Detects modified system binaries, changed configs, new unexpected files
+
+### ACCT-9622 - Process Accounting
+- **What it does**: Logs information about every process execution
+- **Why it matters**: Essential for forensic analysis after security incidents
+- **Usage**: `lastcomm` to see recent commands
+
+### ACCT-9626 - System Statistics (sysstat)
+- **What it does**: Collects CPU, memory, disk I/O, and network statistics over time
+- **Why it matters**: Helps diagnose performance issues and detect anomalies
+- **Usage**: `sar` for historical data
+
+### USB-1000 / STRG-1846 - Disable USB/Firewire Storage
+- **What it does**: Prevents loading of USB and Firewire storage drivers
+- **Why it matters**: Prevents data theft via USB drives and malware introduction
+- **⚠️ Warning**: Completely disables USB storage - keyboards/mice still work
+
+### HRDN-7222 - Restrict Compiler Access
+- **What it does**: Limits compiler (gcc, g++, make) usage to root only
+- **Why it matters**: Prevents attackers from compiling exploit code if they gain shell access
+
+### Lynis Whitelist for Proxmox
+- **What it does**: Creates profile to skip false positive tests specific to Proxmox
+- **Skipped tests**:
+  - NETW-3015: Promiscuous interfaces (required for VM bridges)
+  - KRNL-5788: Non-standard kernel (pve-kernel uses different paths)
+  - FILE-6310: Separate partitions (difficult to change post-installation)
+
 ### Optional Features
 - **Proxmox Auto-Update Script**: Integration with automated cluster update system
 - **Backup Creation**: Automatic backup of all modified configurations
