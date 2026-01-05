@@ -39,6 +39,38 @@ A comprehensive security hardening script for Proxmox VE servers that implements
 - **Fail2Ban**: Automatic IP blocking for brute force attempts
 - **Audit Logging**: Monitors critical system files and configurations
 
+## 📋 Requirements
+
+- Proxmox VE 9.x
+- Root access to the server
+- Internet connection for package installation
+- At least 100MB free disk space
+
+## 🚀 Quick Start
+
+### One-Line Installation
+
+```bash
+wget https://raw.githubusercontent.com/MrMasterbay/proxmox-security-hardening/main/seuwurity.sh && chmod +x seuwurity.sh && ./seuwurity.sh
+```
+
+### Manual Installation
+
+1. **Download the script**:
+```bash
+wget https://raw.githubusercontent.com/MrMasterbay/proxmox-security-hardening/main/seuwurity.sh
+```
+
+2. **Make it executable**:
+```bash
+chmod +x seuwurity.sh
+```
+
+3. **Run the script**:
+```bash
+./seuwurity.sh
+```
+
 ---
 
 ## CIS Benchmark Controls
@@ -238,38 +270,6 @@ Based on the **DOD(Department of Defense) STIG Guidelines**
 ### Optional Features
 - **Proxmox Auto-Update Script**: Integration with automated cluster update system
 - **Backup Creation**: Automatic backup of all modified configurations
-
-## 📋 Requirements
-
-- Proxmox VE 9.x
-- Root access to the server
-- Internet connection for package installation
-- At least 100MB free disk space
-
-## 🚀 Quick Start
-
-### One-Line Installation
-
-```bash
-wget https://raw.githubusercontent.com/MrMasterbay/proxmox-security-hardening/main/seuwurity.sh && chmod +x seuwurity.sh && ./seuwurity.sh
-```
-
-### Manual Installation
-
-1. **Download the script**:
-```bash
-wget https://raw.githubusercontent.com/MrMasterbay/proxmox-security-hardening/main/seuwurity.sh
-```
-
-2. **Make it executable**:
-```bash
-chmod +x seuwurity.sh
-```
-
-3. **Run the script**:
-```bash
-./seuwurity.sh
-```
 
 ## 📖 What Gets Modified
 
