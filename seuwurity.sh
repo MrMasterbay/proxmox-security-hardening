@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Proxmox Security Hardening Script v3.5
+# Proxmox Security Hardening Script v3.5.1
 # ═══════════════════════════════════════════════════════════════
 #
 # Author: A tired sysadmin who thought "I'll do this quickly" at 3am
@@ -32,6 +32,12 @@
 # Changelog v3.5
 #   -  Added the CIS recommendations
 #
+# Changelog v3.5.1 
+#   - Expanded MalwareHunterKit with exclusions that now work. Maybe
+#   - Added AV Scan Option but common why? (Multiple times stated not recommended)
+#   - Added two more CIS recommendations
+#   - Changed User handling when nodes are in a cluster
+#
 # Known "features" (not bugs, just undocumented features):
 #   - Works best when you make a backup first
 #   - Tested on Proxmox 9.1 (other versions: good luck!)
@@ -50,7 +56,7 @@ set -e  # Exit on errors (because I'm too lazy to check every exit code)
 # Here's the version. If you change this without knowing what you're doing,
 # that's your problem, not mine.
 # ══════════════════════════════════════════════════════════════════════════════
-SCRIPT_VERSION="3.5"
+SCRIPT_VERSION="3.5.1"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/MrMasterbay/proxmox-security-hardening/main/seuwurity.sh"
 GITHUB_REPO_URL="https://github.com/MrMasterbay/proxmox-security-hardening"
 
@@ -926,82 +932,325 @@ apt install -y $PACKAGES 2>/dev/null || {
 print_success "Packages installed"
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CREATE SUPERADMIN USER
-# Now the user is actually created
+# CLUSTER-AWARE USER MANAGEMENT
+# In a cluster, users are stored in /etc/pve/user.cfg (shared across all nodes)
 # ══════════════════════════════════════════════════════════════════════════════
 
-print_section "👤 Creating Superadmin User"
+print_section "👥 User Management Mode"
 
-# Generate a strong password
-# 32 characters should be enough... right?
-SUPERADMIN_PASS=$(LC_ALL=C tr -dc 'A-Za-z0-9!@#$%^&*()_+' < /dev/urandom | head -c 32)
+echo ""
+echo "How do you want to handle admin users?"
+echo ""
+echo "  1) Standard Mode (Default)"
+echo "     → Creates NEW superadmin + backupadmin on this node"
+echo "     → Best for: Standalone servers or FIRST node in cluster"
+echo ""
+echo "  2) Cluster Mode"
+echo "     → Detects existing admin users from cluster"
+echo "     → Reuses same usernames across all nodes"
+echo "     → Best for: ADDITIONAL nodes in existing cluster"
+echo ""
+read -p "Your choice [1-2] (Default: 1): " USER_MODE
+USER_MODE=${USER_MODE:-1}
 
-# Create user if not already existing
-if id "$SUPERADMIN" &>/dev/null; then
-    print_warning "User $SUPERADMIN already exists"
-else
-    adduser --gecos "Proxmox Superadmin" --disabled-password "$SUPERADMIN"
-    print_success "User created: $SUPERADMIN"
+# Initialize variables
+SUPERADMIN=""
+BACKUPADMIN=""
+SUPERADMIN_PASS=""
+BACKUPADMIN_PASS=""
+CREATE_NEW_USERS="yes"
+
+if [[ "$USER_MODE" == "2" ]]; then
+    # ═══════════════════════════════════════════════════════════════════════
+    # CLUSTER MODE - Detect and reuse existing users
+    # ═══════════════════════════════════════════════════════════════════════
+    
+    print_section "🔍 Cluster Mode - Detecting Existing Users"
+    
+    echo ""
+    echo "Searching for existing admin users in cluster..."
+    echo ""
+    
+    EXISTING_SUPERADMIN=""
+    EXISTING_BACKUPADMIN=""
+    
+    if [[ -f /etc/pve/user.cfg ]]; then
+        # Search for users matching our naming pattern
+        EXISTING_SUPERADMIN=$(grep -oP 'user:\K(superadmin[_0-9]*)@pam' /etc/pve/user.cfg 2>/dev/null | head -1 | sed 's/@pam//')
+        EXISTING_BACKUPADMIN=$(grep -oP 'user:\K(backupadmin[_0-9]*)@pam' /etc/pve/user.cfg 2>/dev/null | head -1 | sed 's/@pam//')
+        
+        # Also check for custom named admins with Administrator role
+        if [[ -z "$EXISTING_SUPERADMIN" ]]; then
+            echo ""
+            echo "No 'superadmin_*' found. Searching for users with Administrator role..."
+            echo ""
+            echo "Users with Administrator role:"
+            grep -E "acl:.*:Administrator:" /etc/pve/user.cfg 2>/dev/null | grep -oP '\w+@pam' | while read user; do
+                echo "  • $user"
+            done
+            echo ""
+        fi
+    fi
+    
+    if [[ -n "$EXISTING_SUPERADMIN" ]] || [[ -n "$EXISTING_BACKUPADMIN" ]]; then
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "  ✅ EXISTING ADMIN USERS FOUND!"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+        
+        if [[ -n "$EXISTING_SUPERADMIN" ]]; then
+            echo "  Superadmin:  $EXISTING_SUPERADMIN"
+        fi
+        if [[ -n "$EXISTING_BACKUPADMIN" ]]; then
+            echo "  Backupadmin: $EXISTING_BACKUPADMIN"
+        fi
+        echo ""
+        
+        if ask_user "Use these existing users?"; then
+            CREATE_NEW_USERS="no"
+            SUPERADMIN="${EXISTING_SUPERADMIN:-}"
+            BACKUPADMIN="${EXISTING_BACKUPADMIN:-}"
+            
+            echo ""
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "  🔐 PASSWORD ENTRY"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo ""
+            echo "Enter the EXISTING passwords (must match other nodes!):"
+            echo ""
+            
+            if [[ -n "$SUPERADMIN" ]]; then
+                read -s -p "Password for $SUPERADMIN: " SUPERADMIN_PASS
+                echo ""
+            fi
+            
+            if [[ -n "$BACKUPADMIN" ]]; then
+                read -s -p "Password for $BACKUPADMIN: " BACKUPADMIN_PASS
+                echo ""
+            fi
+            
+            # Handle missing users
+            if [[ -z "$SUPERADMIN" ]]; then
+                echo ""
+                log_warning "No superadmin found - will create new one"
+                read -p "Superadmin username [superadmin]: " SUPERADMIN_NAME
+                SUPERADMIN_NAME=${SUPERADMIN_NAME:-superadmin}
+                RAND_SUFFIX=$(shuf -i 100000-999999 -n1)
+                SUPERADMIN="${SUPERADMIN_NAME}_${RAND_SUFFIX}"
+                SUPERADMIN_PASS=$(LC_ALL=C tr -dc 'A-Za-z0-9!@#$%^&*()_+' < /dev/urandom | head -c 32)
+            fi
+            
+            if [[ -z "$BACKUPADMIN" ]]; then
+                echo ""
+                log_warning "No backupadmin found - will create new one"
+                read -p "Backupadmin username [backupadmin]: " BACKUPADMIN_NAME
+                BACKUPADMIN_NAME=${BACKUPADMIN_NAME:-backupadmin}
+                RAND_SUFFIX=$(shuf -i 100000-999999 -n1)
+                BACKUPADMIN="${BACKUPADMIN_NAME}_${RAND_SUFFIX}"
+                BACKUPADMIN_PASS=$(LC_ALL=C tr -dc 'A-Za-z0-9!@#$%^&*()_+' < /dev/urandom | head -c 128)
+            fi
+            
+        else
+            log_info "Creating new users instead..."
+            CREATE_NEW_USERS="yes"
+        fi
+    else
+        echo ""
+        log_warning "No existing admin users found in cluster!"
+        echo ""
+        echo "This could mean:"
+        echo "  • This is the first node in the cluster"
+        echo "  • The hardening script wasn't run on other nodes yet"
+        echo "  • Users were created with different naming convention"
+        echo ""
+        log_info "Switching to Standard Mode - creating new users..."
+        echo ""
+        CREATE_NEW_USERS="yes"
+    fi
 fi
 
-# Set password
+# ═══════════════════════════════════════════════════════════════════════════
+# STANDARD MODE - Create new users
+# ═══════════════════════════════════════════════════════════════════════════
+
+if [[ "$CREATE_NEW_USERS" == "yes" ]]; then
+    
+    # ─────────────────────────────────────────────────────────────────────────
+    # Superadmin Configuration
+    # ─────────────────────────────────────────────────────────────────────────
+    
+    print_section "👤 Superadmin Configuration"
+    
+    echo ""
+    echo "The superadmin user will have:"
+    echo "  • Full SSH access from anywhere"
+    echo "  • Proxmox Administrator role (WebUI)"
+    echo "  • sudo privileges"
+    if [[ "$IS_CLUSTER" == "yes" ]]; then
+        echo "  • Access to ALL cluster nodes (after running script there)"
+    fi
+    echo ""
+    
+    DEFAULT_ADMIN="superadmin"
+    read -p "Superadmin username [$DEFAULT_ADMIN]: " SUPERADMIN_NAME
+    SUPERADMIN_NAME=${SUPERADMIN_NAME:-$DEFAULT_ADMIN}
+    
+    if ! validate_username "$SUPERADMIN_NAME"; then
+        print_warning "Invalid username. Using default: $DEFAULT_ADMIN"
+        SUPERADMIN_NAME="$DEFAULT_ADMIN"
+    fi
+    
+    # Add random suffix for security
+    RAND_SUFFIX=$(shuf -i 100000-999999 -n1)
+    SUPERADMIN="${SUPERADMIN_NAME}_${RAND_SUFFIX}"
+    
+    echo ""
+    echo "Superadmin will be created: $SUPERADMIN"
+    
+    # Generate password
+    SUPERADMIN_PASS=$(LC_ALL=C tr -dc 'A-Za-z0-9!@#$%^&*()_+' < /dev/urandom | head -c 32)
+    
+    # ─────────────────────────────────────────────────────────────────────────
+    # Backupadmin Configuration
+    # ─────────────────────────────────────────────────────────────────────────
+    
+    print_section "👤 BackupAdmin Configuration"
+    
+    echo ""
+    echo "The backupadmin is your emergency access:"
+    echo "  • Full SSH access from anywhere"
+    echo "  • Proxmox Administrator role (WebUI)"
+    echo "  • NO 2FA requirement (always accessible)"
+    echo "  • Extra long password (128 chars)"
+    echo ""
+    
+    DEFAULT_ADMIN="backupadmin"
+    read -p "BackupAdmin username [$DEFAULT_ADMIN]: " BACKUPADMIN_NAME
+    BACKUPADMIN_NAME=${BACKUPADMIN_NAME:-$DEFAULT_ADMIN}
+    
+    if ! validate_username "$BACKUPADMIN_NAME"; then
+        print_warning "Invalid username. Using default: $DEFAULT_ADMIN"
+        BACKUPADMIN_NAME="$DEFAULT_ADMIN"
+    fi
+    
+    RAND_SUFFIX=$(shuf -i 100000-999999 -n1)
+    BACKUPADMIN="${BACKUPADMIN_NAME}_${RAND_SUFFIX}"
+    
+    echo ""
+    echo "BackupAdmin will be created: $BACKUPADMIN"
+    
+    BACKUPADMIN_PASS=$(LC_ALL=C tr -dc 'A-Za-z0-9!@#$%^&*()_+' < /dev/urandom | head -c 128)
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════
+# IMPORTANT: Set TOTP exempt users AFTER variables are defined!
+# ═══════════════════════════════════════════════════════════════════════════
+
+TOTP_EXEMPT_USERS="root:${BACKUPADMIN}"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Create Linux users on THIS node (required for SSH)
+# ═══════════════════════════════════════════════════════════════════════════
+
+print_section "🐧 Creating Linux Users"
+
+echo ""
+if [[ "$IS_CLUSTER" == "yes" ]]; then
+    echo "Note: Linux users must be created on EACH node for SSH access."
+    echo "      Proxmox users (WebUI) sync automatically across cluster."
+    echo ""
+fi
+
+# Create Superadmin Linux user
+if id "$SUPERADMIN" &>/dev/null; then
+    log_info "User $SUPERADMIN already exists - updating password"
+else
+    adduser --gecos "Proxmox Superadmin" --disabled-password "$SUPERADMIN"
+    log_success "User created: $SUPERADMIN"
+fi
+
 echo "$SUPERADMIN:$SUPERADMIN_PASS" | chpasswd
-print_success "Password set"
+log_success "Password set"
 
-# Add to sudo group
 usermod -aG sudo "$SUPERADMIN"
-print_success "Added to sudo group"
+log_success "Added to sudo group"
 
-# Create SSH directory
 mkdir -p /home/$SUPERADMIN/.ssh
 chmod 700 /home/$SUPERADMIN/.ssh
 touch /home/$SUPERADMIN/.ssh/authorized_keys
 chmod 600 /home/$SUPERADMIN/.ssh/authorized_keys
 chown -R $SUPERADMIN:$SUPERADMIN /home/$SUPERADMIN/.ssh
 
-# Create Proxmox user and grant permissions
-pveum user add $SUPERADMIN@pam -comment "Proxmox Superadministrator" 2>/dev/null || true
-pveum aclmod / -user $SUPERADMIN@pam -role Administrator
-print_success "Proxmox Administrator role assigned"
-
-# ══════════════════════════════════════════════════════════════════════════════
-# CREATE BACKUPADMIN USER
-# WUshi I'm Backup incase you lose superadmin
-# ══════════════════════════════════════════════════════════════════════════════
-
-print_section "👤 Creating Backupadmin User"
-
-# Generate a strong password
-# 128 characters should be enough like Azure RIGHT?
-BACKUPADMIN_PASS=$(LC_ALL=C tr -dc 'A-Za-z0-9!@#$%^&*()_+' < /dev/urandom | head -c 128)
-
-# Create user if not already existing
+# Create Backupadmin Linux user
 if id "$BACKUPADMIN" &>/dev/null; then
-    print_warning "User $BACKUPADMIN already exists"
+    log_info "User $BACKUPADMIN already exists - updating password"
 else
     adduser --gecos "Proxmox BackupAdmin" --disabled-password "$BACKUPADMIN"
-    print_success "User created: $BACKUPADMIN"
+    log_success "User created: $BACKUPADMIN"
 fi
 
-# Set password
 echo "$BACKUPADMIN:$BACKUPADMIN_PASS" | chpasswd
-print_success "Password set"
+log_success "Password set"
 
-# Add to sudo group
 usermod -aG sudo "$BACKUPADMIN"
-print_success "Added to sudo group"
+log_success "Added to sudo group"
 
-# Create SSH directory
 mkdir -p /home/$BACKUPADMIN/.ssh
 chmod 700 /home/$BACKUPADMIN/.ssh
 touch /home/$BACKUPADMIN/.ssh/authorized_keys
 chmod 600 /home/$BACKUPADMIN/.ssh/authorized_keys
 chown -R $BACKUPADMIN:$BACKUPADMIN /home/$BACKUPADMIN/.ssh
 
-# Create Proxmox user and grant permissions
-pveum user add $BACKUPADMIN@pam -comment "Proxmox BackupAdmin" 2>/dev/null || true ## makes your life easier
-pveum aclmod / -user $BACKUPADMIN@pam -role Administrator
-print_success "Proxmox Administrator role assigned"
+# ═══════════════════════════════════════════════════════════════════════════
+# Create Proxmox users (shared across cluster)
+# ═══════════════════════════════════════════════════════════════════════════
+
+print_section "🖥️ Creating Proxmox Users"
+
+# Superadmin Proxmox user
+if pveum user list 2>/dev/null | grep -q "$SUPERADMIN@pam"; then
+    log_info "Proxmox user $SUPERADMIN@pam already exists"
+else
+    pveum user add $SUPERADMIN@pam -comment "Proxmox Superadministrator" 2>/dev/null || true
+    log_success "Proxmox user created: $SUPERADMIN@pam"
+fi
+pveum aclmod / -user $SUPERADMIN@pam -role Administrator 2>/dev/null || true
+log_success "Administrator role assigned to $SUPERADMIN"
+
+# Backupadmin Proxmox user
+if pveum user list 2>/dev/null | grep -q "$BACKUPADMIN@pam"; then
+    log_info "Proxmox user $BACKUPADMIN@pam already exists"
+else
+    pveum user add $BACKUPADMIN@pam -comment "Proxmox BackupAdmin" 2>/dev/null || true
+    log_success "Proxmox user created: $BACKUPADMIN@pam"
+fi
+pveum aclmod / -user $BACKUPADMIN@pam -role Administrator 2>/dev/null || true
+log_success "Administrator role assigned to $BACKUPADMIN"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Summary
+# ═══════════════════════════════════════════════════════════════════════════
+
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  ✅ USER SETUP COMPLETE"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+echo "  Superadmin:  $SUPERADMIN"
+echo "  Backupadmin: $BACKUPADMIN"
+echo ""
+
+if [[ "$IS_CLUSTER" == "yes" ]]; then
+    echo "  🖥️  Cluster Status:"
+    echo "      WebUI:  ✅ Works on ALL nodes (auto-sync)"
+    echo "      SSH:    ⚠️  Only works on THIS node"
+    echo ""
+    echo -e "  ${YELLOW}💡 Run this script on other nodes and choose${NC}"
+    echo -e "  ${YELLOW}   'Cluster Mode' to enable SSH there too!${NC}"
+    echo ""
+fi
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # GOOGLE AUTHENTICATOR SETUP
@@ -1247,6 +1496,16 @@ kernel.kptr_restrict = 2
 
 # Disable magic SysRq - against physical access attacks
 kernel.sysrq = 0
+
+# CIS 1.5.1-1.5.2: Hardlink/Symlink Protection
+fs.protected_hardlinks = 1
+fs.protected_symlinks = 1
+
+# CIS 1.5.3: ptrace restriction (prevents process hijacking)
+kernel.yama.ptrace_scope = 1
+
+# CIS 1.5.4: Core dump protection for SUID programs
+fs.suid_dumpable = 0
 
 EOF
     sysctl -p >/dev/null 2>&1
@@ -2241,9 +2500,560 @@ echo "  - ClamAV: Full antivirus scanner for files and emails"
 echo ""
 echo "Regular scans help detect compromises early before damage spreads."
 echo ""
-echo "Note: VM disk images (.qcow2, .raw, .vmdk) will be automatically excluded"
-echo "      to prevent false positives and performance issues."
+echo "Note: VM disk images will be automatically excluded for this storage types:"
+echo "      - Local Directory (/var/lib/vz/)"
+echo "      - LVM / LVM-Thin (/dev/pve/, /dev/*/vm-*, /dev/*/base-*)"
+echo "      - ZFS (/dev/zvol/)"
+echo "      - Ceph RBD (/dev/rbd/)"
+echo "      - iSCSI (/dev/disk/by-path/)"
+echo "      - NFS/CIFS (auto-detected from Proxmox config)"
 echo ""
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Function to detect all Proxmox storage paths
+# ═══════════════════════════════════════════════════════════════════════════
+get_proxmox_storage_paths() {
+    local paths=""
+    
+    # Default Proxmox paths
+    paths="/var/lib/vz/images"
+    paths="$paths:/var/lib/vz/template"
+    paths="$paths:/var/lib/vz/dump"
+    paths="$paths:/var/lib/vz/private"
+    paths="$paths:/var/lib/pve"
+    paths="$paths:/var/lib/pve/local-btrfs"
+    
+    # LVM paths (including thin pools)
+    paths="$paths:/dev/pve"
+    
+    # ZFS paths
+    paths="$paths:/dev/zvol"
+    
+    # Ceph RBD paths
+    paths="$paths:/dev/rbd"
+    
+    # Parse storage.cfg for custom paths
+    if [[ -f /etc/pve/storage.cfg ]]; then
+        # Extract 'path' entries from storage.cfg
+        while IFS= read -r line; do
+            if [[ "$line" =~ ^[[:space:]]*path[[:space:]]+(.*) ]]; then
+                custom_path="${BASH_REMATCH[1]}"
+                custom_path=$(echo "$custom_path" | xargs)  # trim whitespace
+                if [[ -n "$custom_path" && "$custom_path" != "/" ]]; then
+                    paths="$paths:$custom_path"
+                fi
+            fi
+            # Extract 'mountpoint' entries (for ZFS, etc.)
+            if [[ "$line" =~ ^[[:space:]]*mountpoint[[:space:]]+(.*) ]]; then
+                custom_path="${BASH_REMATCH[1]}"
+                custom_path=$(echo "$custom_path" | xargs)
+                if [[ -n "$custom_path" && "$custom_path" != "/" ]]; then
+                    paths="$paths:$custom_path"
+                fi
+            fi
+        done < /etc/pve/storage.cfg
+    fi
+    
+    # Find mounted NFS/CIFS shares that might contain VMs
+    mount | grep -E "(nfs|cifs|glusterfs)" | awk '{print $3}' | while read -r nfs_path; do
+        if [[ -n "$nfs_path" ]]; then
+            paths="$paths:$nfs_path"
+        fi
+    done
+    
+    echo "$paths"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Generate exclusion config for rkhunter
+# ═══════════════════════════════════════════════════════════════════════════
+generate_rkhunter_exclusions() {
+    local storage_paths
+    storage_paths=$(get_proxmox_storage_paths)
+    
+    cat > /etc/rkhunter.conf.local << EOF
+# ═══════════════════════════════════════════════════════════════════════════
+# Proxmox VM Disk Image Exclusions
+# Generated by seuwurity.sh
+# ═══════════════════════════════════════════════════════════════════════════
+
+# All Proxmox storage paths (auto-detected)
+EXCLUDE_PATHS=${storage_paths}
+
+# LVM device patterns (vm-*, base-*, data-*)
+EXCLUDE_PATHS=/dev/pve:/dev/mapper/pve-*
+
+# Skip /dev entirely for block device storages (LVM, Ceph, iSCSI)
+# These are block devices, not filesystems to scan
+EXCLUDE_PATHS=/dev/rbd:/dev/zvol:/dev/disk/by-path
+
+# File extension patterns (for directory-based storage)
+SCRIPTWHITELIST=/var/lib/vz/images/*
+SCRIPTWHITELIST=/var/lib/vz/template/*
+
+# Ignore Proxmox-specific binaries that trigger false positives
+ALLOWHIDDENDIR=/etc/.git
+ALLOWHIDDENFILE=/etc/.pwd.lock
+ALLOWDEVFILE=/dev/shm/qemu-*
+ALLOWDEVFILE=/dev/shm/pve-shm-*
+
+EOF
+    log_success "rkhunter exclusions configured for all storage backends"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Generate exclusion config for ClamAV
+# ═══════════════════════════════════════════════════════════════════════════
+generate_clamav_exclusions() {
+    local storage_paths
+    storage_paths=$(get_proxmox_storage_paths)
+    
+    # ClamAV config location
+    local CLAMAV_CONF="/etc/clamav/clamd.conf"
+    local CLAMAV_CONF_DIR="/etc/clamav/clamd.conf.d"
+    
+    # Check if clamd.conf exists
+    if [[ ! -f "$CLAMAV_CONF" ]]; then
+        log_warning "ClamAV config not found at $CLAMAV_CONF"
+        log_info "Exclusions will be added when ClamAV is properly configured"
+        return
+    fi
+    
+    # Try to create conf.d directory approach first after it throws errors in my face q-q
+    if mkdir -p "$CLAMAV_CONF_DIR" 2>/dev/null; then
+        # Check if clamd.conf includes conf.d
+        if ! grep -q "IncludeDir.*clamd.conf.d" "$CLAMAV_CONF" 2>/dev/null; then
+            # Add include directive to main config now should worki
+            echo "" >> "$CLAMAV_CONF"
+            echo "# Include additional config files" >> "$CLAMAV_CONF"
+            echo "IncludeDir $CLAMAV_CONF_DIR" >> "$CLAMAV_CONF"
+            log_info "Added IncludeDir directive to clamd.conf"
+        fi
+        
+        # Write exclusions to separate file
+        cat > "$CLAMAV_CONF_DIR/proxmox-exclusions.conf" << EOF
+# ═══════════════════════════════════════════════════════════════════════════
+# Proxmox VM Disk Image Exclusions
+# Generated by seuwurity.sh
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Directory-based storage
+ExcludePath ^/var/lib/vz/images/
+ExcludePath ^/var/lib/vz/template/
+ExcludePath ^/var/lib/vz/dump/
+ExcludePath ^/var/lib/vz/private/
+ExcludePath ^/var/lib/pve/
+
+# LVM / Device Mapper
+ExcludePath ^/dev/pve/
+ExcludePath ^/dev/mapper/pve-
+ExcludePath ^/dev/dm-
+
+# ZFS
+ExcludePath ^/dev/zvol/
+ExcludePath ^/dev/zd
+
+# Ceph RBD
+ExcludePath ^/dev/rbd/
+
+# iSCSI
+ExcludePath ^/dev/disk/by-path/
+
+# File extensions (catch-all for any storage)
+ExcludePath \.qcow2$
+ExcludePath \.raw$
+ExcludePath \.vmdk$
+ExcludePath \.vhdx$
+ExcludePath \.vdi$
+ExcludePath \.iso$
+ExcludePath \.img$
+
+# Proxmox backup files
+ExcludePath \.vma$
+ExcludePath \.vma\.zst$
+ExcludePath \.vma\.lzo$
+ExcludePath \.vma\.gz$
+
+# QEMU runtime files
+ExcludePath ^/dev/shm/qemu-
+ExcludePath ^/dev/shm/pve-shm-
+ExcludePath ^/run/qemu-server/
+EOF
+        log_success "ClamAV exclusions written to $CLAMAV_CONF_DIR/proxmox-exclusions.conf"
+        
+    else
+        # Fallback: append directly to main config
+        log_info "Cannot create conf.d directory, appending to main config..."
+        
+        # Check if exclusions already exist
+        if grep -q "Proxmox VM Disk Image Exclusions" "$CLAMAV_CONF" 2>/dev/null; then
+            log_info "ClamAV exclusions already present in config"
+            return
+        fi
+        
+        cat >> "$CLAMAV_CONF" << EOF
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Proxmox VM Disk Image Exclusions
+# Generated by seuwurity.sh
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Directory-based storage
+ExcludePath ^/var/lib/vz/images/
+ExcludePath ^/var/lib/vz/template/
+ExcludePath ^/var/lib/vz/dump/
+ExcludePath ^/var/lib/vz/private/
+ExcludePath ^/var/lib/pve/
+
+# LVM / Device Mapper
+ExcludePath ^/dev/pve/
+ExcludePath ^/dev/mapper/pve-
+ExcludePath ^/dev/dm-
+
+# ZFS
+ExcludePath ^/dev/zvol/
+ExcludePath ^/dev/zd
+
+# Ceph RBD
+ExcludePath ^/dev/rbd/
+
+# iSCSI
+ExcludePath ^/dev/disk/by-path/
+
+# File extensions (catch-all for any storage)
+ExcludePath \.qcow2$
+ExcludePath \.raw$
+ExcludePath \.vmdk$
+ExcludePath \.vhdx$
+ExcludePath \.vdi$
+ExcludePath \.iso$
+ExcludePath \.img$
+
+# Proxmox backup files
+ExcludePath \.vma$
+ExcludePath \.vma\.zst$
+ExcludePath \.vma\.lzo$
+ExcludePath \.vma\.gz$
+
+# QEMU runtime files
+ExcludePath ^/dev/shm/qemu-
+ExcludePath ^/dev/shm/pve-shm-
+ExcludePath ^/run/qemu-server/
+EOF
+        log_success "ClamAV exclusions appended to $CLAMAV_CONF"
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Create safe scanning wrapper script
+# ═══════════════════════════════════════════════════════════════════════════
+create_clamscan_wrapper() {
+    cat > /usr/local/bin/clamscan-safe << 'SCRIPT'
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════
+# ClamAV Safe Scanner for Proxmox
+# Automatically excludes all VM disk images and Proxmox storage
+# Generated by seuwurity.sh
+# ═══════════════════════════════════════════════════════════════════════════
+
+set -e
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
+echo -e "${GREEN}  ClamAV Safe Scanner for Proxmox${NC}"
+echo -e "${GREEN}  VM disk images will be automatically excluded${NC}"
+echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
+echo ""
+
+# Build exclusion list
+EXCLUDE_OPTS=(
+    # File extensions
+    --exclude='\.qcow2$'
+    --exclude='\.raw$'
+    --exclude='\.vmdk$'
+    --exclude='\.vhdx$'
+    --exclude='\.vdi$'
+    --exclude='\.iso$'
+    --exclude='\.img$'
+    --exclude='\.vma$'
+    --exclude='\.vma\.zst$'
+    --exclude='\.vma\.lzo$'
+    --exclude='\.vma\.gz$'
+    
+    # Directory storage
+    --exclude-dir='/var/lib/vz/images'
+    --exclude-dir='/var/lib/vz/template'
+    --exclude-dir='/var/lib/vz/dump'
+    --exclude-dir='/var/lib/vz/private'
+    --exclude-dir='/var/lib/pve'
+    
+    # Block devices (LVM, ZFS, Ceph, iSCSI)
+    --exclude-dir='/dev/pve'
+    --exclude-dir='/dev/zvol'
+    --exclude-dir='/dev/rbd'
+    --exclude-dir='/dev/disk/by-path'
+    --exclude-dir='/dev/mapper'
+    
+    # QEMU runtime
+    --exclude-dir='/dev/shm'
+    --exclude-dir='/run/qemu-server'
+)
+
+# Auto-detect custom storage paths from Proxmox config
+if [[ -f /etc/pve/storage.cfg ]]; then
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^[[:space:]]*(path|mountpoint)[[:space:]]+(.*) ]]; then
+            custom_path="${BASH_REMATCH[2]}"
+            custom_path=$(echo "$custom_path" | xargs)
+            if [[ -n "$custom_path" && "$custom_path" != "/" && -d "$custom_path" ]]; then
+                EXCLUDE_OPTS+=("--exclude-dir=$custom_path")
+                echo -e "${YELLOW}Auto-excluding custom storage: $custom_path${NC}"
+            fi
+        fi
+    done < /etc/pve/storage.cfg
+fi
+
+# Auto-detect NFS/CIFS mounts
+while IFS= read -r mount_path; do
+    if [[ -n "$mount_path" && "$mount_path" != "/" ]]; then
+        EXCLUDE_OPTS+=("--exclude-dir=$mount_path")
+        echo -e "${YELLOW}Auto-excluding network storage: $mount_path${NC}"
+    fi
+done < <(mount | grep -E "(nfs|cifs|glusterfs)" | awk '{print $3}')
+
+echo ""
+echo -e "${GREEN}Running scan...${NC}"
+echo ""
+
+# Run clamscan with all exclusions
+clamscan "${EXCLUDE_OPTS[@]}" "$@"
+SCRIPT
+
+    chmod +x /usr/local/bin/clamscan-safe
+    log_success "Created /usr/local/bin/clamscan-safe wrapper"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Optional: Scheduled ClamAV Scans 
+# Not recommended at all but hey better safe than sorry. Incase of some compliance
+# ═══════════════════════════════════════════════════════════════════════════
+setup_clamav_scheduled_scan() {
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  📅 SCHEDULED ANTIVIRUS SCANS"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    echo "ClamAV does NOT scan automatically after installation!"
+    echo "You can set up scheduled scans to run weekly."
+    echo "Please note that this is currently not recommended!"
+    echo "But it could be required because of some compliance"
+    echo ""
+    echo "Scan options:"
+    echo "  • Scans critical system directories (/etc, /usr, /bin, /home)"
+    echo "  • Excludes VM disk images automatically"
+    echo "  • Sends email report if threats found"
+    echo "  • Runs Sunday 3:00 AM (low-traffic time)"
+    echo ""
+    
+    if ask_user "Do you want to enable weekly scheduled scans?"; then
+        
+        # Ask for email notification
+        echo ""
+        read -p "Email for scan reports (leave empty to skip): " SCAN_EMAIL
+        
+        # Create the scan script
+        cat > /usr/local/bin/clamav-weekly-scan.sh << 'SCANSCRIPT'
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════
+# ClamAV Weekly Scan Script for Proxmox
+# Generated by seuwurity.sh
+# Runs every Sunday at 3:00 AM
+# ═══════════════════════════════════════════════════════════════════════════
+
+set -e
+
+# Configuration
+LOG_DIR="/var/log/clamav"
+LOG_FILE="$LOG_DIR/weekly-scan-$(date +%Y%m%d).log"
+HOSTNAME=$(hostname -f)
+SCAN_DIRS="/etc /usr /bin /sbin /lib /home /root /var/www /opt"
+
+# Create log directory
+mkdir -p "$LOG_DIR"
+
+# Start logging
+echo "═══════════════════════════════════════════════════════════════" > "$LOG_FILE"
+echo "ClamAV Weekly Scan Report - $HOSTNAME" >> "$LOG_FILE"
+echo "Started: $(date)" >> "$LOG_FILE"
+echo "═══════════════════════════════════════════════════════════════" >> "$LOG_FILE"
+echo "" >> "$LOG_FILE"
+
+# Update virus definitions first
+echo "Updating virus definitions..." >> "$LOG_FILE"
+freshclam >> "$LOG_FILE" 2>&1 || true
+echo "" >> "$LOG_FILE"
+
+# Build exclusion list
+EXCLUDE_OPTS=(
+    # VM disk image extensions
+    --exclude='\.qcow2$'
+    --exclude='\.raw$'
+    --exclude='\.vmdk$'
+    --exclude='\.vhdx$'
+    --exclude='\.vdi$'
+    --exclude='\.iso$'
+    --exclude='\.img$'
+    --exclude='\.vma$'
+    --exclude='\.vma\.zst$'
+    --exclude='\.vma\.lzo$'
+    --exclude='\.vma\.gz$'
+    
+    # Proxmox storage directories
+    --exclude-dir='/var/lib/vz/images'
+    --exclude-dir='/var/lib/vz/template'
+    --exclude-dir='/var/lib/vz/dump'
+    --exclude-dir='/var/lib/vz/private'
+    --exclude-dir='/var/lib/pve'
+    
+    # Block devices
+    --exclude-dir='/dev'
+    --exclude-dir='/proc'
+    --exclude-dir='/sys'
+    --exclude-dir='/run'
+)
+
+# Auto-detect custom storage paths
+if [[ -f /etc/pve/storage.cfg ]]; then
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^[[:space:]]*(path|mountpoint)[[:space:]]+(.*) ]]; then
+            custom_path="${BASH_REMATCH[2]}"
+            custom_path=$(echo "$custom_path" | xargs)
+            if [[ -n "$custom_path" && "$custom_path" != "/" && -d "$custom_path" ]]; then
+                EXCLUDE_OPTS+=("--exclude-dir=$custom_path")
+            fi
+        fi
+    done < /etc/pve/storage.cfg
+fi
+
+# Auto-detect NFS/CIFS mounts
+while IFS= read -r mount_path; do
+    if [[ -n "$mount_path" && "$mount_path" != "/" ]]; then
+        EXCLUDE_OPTS+=("--exclude-dir=$mount_path")
+    fi
+done < <(mount | grep -E "(nfs|cifs|glusterfs)" | awk '{print $3}')
+
+echo "Scanning directories: $SCAN_DIRS" >> "$LOG_FILE"
+echo "" >> "$LOG_FILE"
+
+# Run the scan
+INFECTED=0
+for DIR in $SCAN_DIRS; do
+    if [[ -d "$DIR" ]]; then
+        echo "Scanning: $DIR" >> "$LOG_FILE"
+        clamscan -r --infected --log="$LOG_FILE.tmp" "${EXCLUDE_OPTS[@]}" "$DIR" 2>&1 || true
+        
+        # Count infected files
+        if [[ -f "$LOG_FILE.tmp" ]]; then
+            FOUND=$(grep -c "FOUND$" "$LOG_FILE.tmp" 2>/dev/null || echo "0")
+            INFECTED=$((INFECTED + FOUND))
+            cat "$LOG_FILE.tmp" >> "$LOG_FILE"
+            rm -f "$LOG_FILE.tmp"
+        fi
+    fi
+done
+
+echo "" >> "$LOG_FILE"
+echo "═══════════════════════════════════════════════════════════════" >> "$LOG_FILE"
+echo "Scan completed: $(date)" >> "$LOG_FILE"
+echo "Infected files found: $INFECTED" >> "$LOG_FILE"
+echo "═══════════════════════════════════════════════════════════════" >> "$LOG_FILE"
+
+# Send email if configured and threats found
+SCANSCRIPT
+
+        # Add email notification if provided
+        if [[ -n "$SCAN_EMAIL" ]]; then
+            cat >> /usr/local/bin/clamav-weekly-scan.sh << EMAILPART
+
+# Email notification
+NOTIFY_EMAIL="$SCAN_EMAIL"
+
+if [[ \$INFECTED -gt 0 ]]; then
+    # Threats found - send alert
+    SUBJECT="[\$HOSTNAME] ⚠️ ClamAV: \$INFECTED THREATS FOUND!"
+    mail -s "\$SUBJECT" "\$NOTIFY_EMAIL" < "\$LOG_FILE"
+    echo "Alert email sent to \$NOTIFY_EMAIL"
+elif [[ -n "\$NOTIFY_EMAIL" ]]; then
+    # Optional: Send weekly summary even if clean
+    # Uncomment the following lines if you want weekly reports regardless
+    # SUBJECT="[\$HOSTNAME] ✅ ClamAV Weekly Scan - Clean"
+    # mail -s "\$SUBJECT" "\$NOTIFY_EMAIL" < "\$LOG_FILE"
+    echo "Scan clean - no email sent (enable in script for weekly reports)"
+fi
+EMAILPART
+        fi
+
+        # Add cleanup at the end
+        cat >> /usr/local/bin/clamav-weekly-scan.sh << 'CLEANUP'
+
+# Cleanup old logs (keep 30 days)
+find "$LOG_DIR" -name "weekly-scan-*.log" -mtime +30 -delete 2>/dev/null || true
+
+echo "Scan complete. Log: $LOG_FILE"
+CLEANUP
+
+        chmod +x /usr/local/bin/clamav-weekly-scan.sh
+        log_success "Scan script created: /usr/local/bin/clamav-weekly-scan.sh"
+        
+        # Create cron job - Sunday 3:00 AM
+        cat > /etc/cron.d/clamav-weekly-scan << 'CRON'
+# ClamAV Weekly Scan - Generated by seuwurity.sh
+# Runs every Sunday at 3:00 AM
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+0 3 * * 0 root /usr/local/bin/clamav-weekly-scan.sh >/dev/null 2>&1
+CRON
+        
+        chmod 644 /etc/cron.d/clamav-weekly-scan
+        log_success "Weekly scan scheduled: Sundays 3:00 AM"
+        
+        if [[ -n "$SCAN_EMAIL" ]]; then
+            log_success "Email alerts enabled: $SCAN_EMAIL"
+        fi
+        
+        log_info "Logs will be stored in: /var/log/clamav/"
+        log_info "Manual scan: /usr/local/bin/clamav-weekly-scan.sh"
+        
+        # Offer to run initial scan
+        echo ""
+        if ask_user "Run initial scan now? (may take 10-30 minutes)"; then
+            echo ""
+            log_info "Starting initial scan... (this may take a while)"
+            /usr/local/bin/clamav-weekly-scan.sh &
+            SCAN_PID=$!
+            
+            echo ""
+            echo "Scan running in background (PID: $SCAN_PID)"
+            echo "You can continue with the script."
+            echo "Check progress: tail -f /var/log/clamav/weekly-scan-$(date +%Y%m%d).log"
+            echo ""
+        fi
+        
+    else
+        log_info "Scheduled scans not enabled"
+        log_info "Manual scan: clamscan-safe -r /path/to/scan"
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Main scanner installation
+# ═══════════════════════════════════════════════════════════════════════════
 
 if ask_user "Do you want to install a malware/rootkit scanner?"; then
 
@@ -2262,21 +3072,12 @@ if ask_user "Do you want to install a malware/rootkit scanner?"; then
             if ! command -v rkhunter &> /dev/null; then
                 apt-get update -qq
                 apt-get install -y rkhunter
-                
-                log_info "Configuring rkhunter exclusions for VM disk images..."
-                cat >> /etc/rkhunter.conf.local << 'EOF'
-
-# VM Disk Image Exclusions (Proxmox/KVM)
-EXCLUDE_PATHS="/var/lib/vz/images:/var/lib/vz/template:/var/lib/vz/dump:/var/lib/pve"
-EOF
-                
-                rkhunter --update 2>/dev/null || true
-                rkhunter --propupd 2>/dev/null || true
-                log_success "rkhunter installed with VM exclusions"
-                log_info "Run 'rkhunter --check' for a full scan"
-            else
-                log_success "rkhunter already installed"
             fi
+            generate_rkhunter_exclusions
+            rkhunter --update 2>/dev/null || true
+            rkhunter --propupd 2>/dev/null || true
+            log_success "rkhunter installed with comprehensive Proxmox exclusions"
+            log_info "Run 'rkhunter --check' for a full scan"
             fix_applied "HRDN-7230"
             ;;
             
@@ -2284,11 +3085,10 @@ EOF
             if ! command -v chkrootkit &> /dev/null; then
                 apt-get update -qq
                 apt-get install -y chkrootkit
-                log_success "chkrootkit installed"
-                log_info "Run 'chkrootkit' for a scan"
-            else
-                log_success "chkrootkit already installed"
             fi
+            log_success "chkrootkit installed"
+            log_info "Run 'chkrootkit' for a scan"
+            log_warning "Note: chkrootkit doesn't support path exclusions - manual review needed"
             fix_applied "HRDN-7230"
             ;;
             
@@ -2296,55 +3096,21 @@ EOF
             if ! command -v clamscan &> /dev/null; then
                 apt-get update -qq
                 apt-get install -y clamav clamav-daemon clamav-freshclam
-                
-                log_info "Configuring ClamAV exclusions for VM disk images..."
-                
-                if [[ -f /etc/clamav/clamd.conf ]]; then
-                    cp /etc/clamav/clamd.conf /etc/clamav/clamd.conf.bak.$(date +%Y%m%d)
-                    
-                    cat >> /etc/clamav/clamd.conf << 'EOF'
-
-# VM Disk Image Exclusions (Proxmox/KVM)
-ExcludePath ^/var/lib/vz/images/
-ExcludePath ^/var/lib/vz/template/
-ExcludePath ^/var/lib/vz/dump/
-ExcludePath ^/var/lib/pve/
-ExcludePath \.qcow2$
-ExcludePath \.raw$
-ExcludePath \.vmdk$
-ExcludePath \.iso$
-EOF
-                fi
-                
-                cat > /usr/local/bin/clamscan-safe << 'SCRIPT'
-#!/bin/bash
-EXCLUDE_OPTS=(
-    --exclude='\.qcow2$'
-    --exclude='\.raw$'
-    --exclude='\.vmdk$'
-    --exclude='\.iso$'
-    --exclude-dir='/var/lib/vz/images'
-    --exclude-dir='/var/lib/vz/template'
-    --exclude-dir='/var/lib/vz/dump'
-    --exclude-dir='/var/lib/pve'
-)
-echo "Running ClamAV with VM disk image exclusions..."
-clamscan "${EXCLUDE_OPTS[@]}" "$@"
-SCRIPT
-                chmod +x /usr/local/bin/clamscan-safe
-                
-                log_info "Updating ClamAV virus definitions..."
-                systemctl stop clamav-freshclam 2>/dev/null || true
-                freshclam 2>/dev/null || true
-                systemctl start clamav-freshclam 2>/dev/null || true
-                systemctl enable clamav-daemon 2>/dev/null || true
-                systemctl start clamav-daemon 2>/dev/null || true
-                
-                log_success "ClamAV installed with VM exclusions"
-                log_info "Use 'clamscan-safe -r /path' for scanning"
-            else
-                log_success "ClamAV already installed"
             fi
+            generate_clamav_exclusions
+            create_clamscan_wrapper
+            
+            log_info "Updating ClamAV virus definitions..."
+            systemctl stop clamav-freshclam 2>/dev/null || true
+            freshclam 2>/dev/null || true
+            systemctl start clamav-freshclam 2>/dev/null || true
+            systemctl enable clamav-daemon 2>/dev/null || true
+            systemctl start clamav-daemon 2>/dev/null || true
+            
+            log_success "ClamAV installed with comprehensive Proxmox exclusions"
+            setup_clamav_scheduled_scan
+            log_info "Use 'clamscan-safe -r /path' for scanning (recommended)"
+            log_info "Or 'clamscan' directly (exclusions in config)"
             fix_applied "HRDN-7230"
             ;;
             
@@ -2353,59 +3119,24 @@ SCRIPT
             
             if ! command -v rkhunter &> /dev/null; then
                 apt-get install -y rkhunter
-                cat >> /etc/rkhunter.conf.local << 'EOF'
-
-# VM Disk Image Exclusions (Proxmox/KVM)
-EXCLUDE_PATHS="/var/lib/vz/images:/var/lib/vz/template:/var/lib/vz/dump:/var/lib/pve"
-EOF
-                rkhunter --update 2>/dev/null || true
-                rkhunter --propupd 2>/dev/null || true
-                log_success "rkhunter installed"
             fi
+            generate_rkhunter_exclusions
+            rkhunter --update 2>/dev/null || true
+            rkhunter --propupd 2>/dev/null || true
             
             if ! command -v clamscan &> /dev/null; then
                 apt-get install -y clamav clamav-daemon clamav-freshclam
-                
-                if [[ -f /etc/clamav/clamd.conf ]]; then
-                    cat >> /etc/clamav/clamd.conf << 'EOF'
-
-# VM Disk Image Exclusions (Proxmox/KVM)
-ExcludePath ^/var/lib/vz/images/
-ExcludePath ^/var/lib/vz/template/
-ExcludePath ^/var/lib/vz/dump/
-ExcludePath ^/var/lib/pve/
-ExcludePath \.qcow2$
-ExcludePath \.raw$
-ExcludePath \.vmdk$
-ExcludePath \.iso$
-EOF
-                fi
-                
-                cat > /usr/local/bin/clamscan-safe << 'SCRIPT'
-#!/bin/bash
-EXCLUDE_OPTS=(
-    --exclude='\.qcow2$'
-    --exclude='\.raw$'
-    --exclude='\.vmdk$'
-    --exclude='\.iso$'
-    --exclude-dir='/var/lib/vz/images'
-    --exclude-dir='/var/lib/vz/template'
-    --exclude-dir='/var/lib/vz/dump'
-    --exclude-dir='/var/lib/pve'
-)
-clamscan "${EXCLUDE_OPTS[@]}" "$@"
-SCRIPT
-                chmod +x /usr/local/bin/clamscan-safe
-                
-                systemctl stop clamav-freshclam 2>/dev/null || true
-                freshclam 2>/dev/null || true
-                systemctl start clamav-freshclam 2>/dev/null || true
-                systemctl enable clamav-daemon 2>/dev/null || true
-                
-                log_success "ClamAV installed"
             fi
+            generate_clamav_exclusions
+            create_clamscan_wrapper
             
-            log_success "rkhunter + ClamAV installed"
+            systemctl stop clamav-freshclam 2>/dev/null || true
+            freshclam 2>/dev/null || true
+            systemctl start clamav-freshclam 2>/dev/null || true
+            systemctl enable clamav-daemon 2>/dev/null || true
+            setup_clamav_scheduled_scan
+            
+            log_success "rkhunter + ClamAV installed with comprehensive Proxmox exclusions"
             fix_applied "HRDN-7230"
             ;;
             
@@ -2413,48 +3144,16 @@ SCRIPT
             apt-get update -qq
             apt-get install -y rkhunter chkrootkit clamav clamav-daemon clamav-freshclam
             
-            cat >> /etc/rkhunter.conf.local << 'EOF'
-
-# VM Disk Image Exclusions (Proxmox/KVM)
-EXCLUDE_PATHS="/var/lib/vz/images:/var/lib/vz/template:/var/lib/vz/dump:/var/lib/pve"
-EOF
-            
-            if [[ -f /etc/clamav/clamd.conf ]]; then
-                cat >> /etc/clamav/clamd.conf << 'EOF'
-
-# VM Disk Image Exclusions (Proxmox/KVM)
-ExcludePath ^/var/lib/vz/images/
-ExcludePath ^/var/lib/vz/template/
-ExcludePath ^/var/lib/vz/dump/
-ExcludePath ^/var/lib/pve/
-ExcludePath \.qcow2$
-ExcludePath \.raw$
-ExcludePath \.vmdk$
-ExcludePath \.iso$
-EOF
-            fi
-            
-            cat > /usr/local/bin/clamscan-safe << 'SCRIPT'
-#!/bin/bash
-EXCLUDE_OPTS=(
-    --exclude='\.qcow2$'
-    --exclude='\.raw$'
-    --exclude='\.vmdk$'
-    --exclude='\.iso$'
-    --exclude-dir='/var/lib/vz/images'
-    --exclude-dir='/var/lib/vz/template'
-    --exclude-dir='/var/lib/vz/dump'
-    --exclude-dir='/var/lib/pve'
-)
-clamscan "${EXCLUDE_OPTS[@]}" "$@"
-SCRIPT
-            chmod +x /usr/local/bin/clamscan-safe
+            generate_rkhunter_exclusions
+            generate_clamav_exclusions
+            create_clamscan_wrapper
             
             rkhunter --update 2>/dev/null || true
             rkhunter --propupd 2>/dev/null || true
             freshclam 2>/dev/null || true
+            setup_clamav_scheduled_scan
             
-            log_success "All scanners installed"
+            log_success "All scanners installed with comprehensive Proxmox exclusions"
             fix_applied "HRDN-7230"
             ;;
             
@@ -3321,6 +4020,116 @@ else
     fix_skipped "CIS 5.1.4-5.1.22"
 fi
 
+#══════════════════════════════════════════════════════════════════════════════
+# FIX: CIS 1.6.1 - Mount Options Hardening
+#══════════════════════════════════════════════════════════════════════════════
+print_section "📁 CIS 1.6.1 - Mount Options Hardening"
+
+echo ""
+echo "Secure mount options restrict what can be done on filesystems:"
+echo "  - nodev: Prevent device files (blocks /dev exploits)"
+echo "  - nosuid: Prevent SUID binaries (blocks privilege escalation)"
+echo "  - noexec: Prevent execution (blocks malware in /tmp)"
+echo ""
+echo "Recommended for:"
+echo "  - /tmp (nodev, nosuid, noexec)"
+echo "  - /var/tmp (nodev, nosuid, noexec)"
+echo "  - /dev/shm (nodev, nosuid, noexec)"
+echo ""
+echo -e "${YELLOW}⚠️  Note: This requires separate partitions for /tmp, /var/tmp${NC}"
+echo "   If they're on root filesystem, we can only secure /dev/shm"
+echo ""
+
+if ask_user "Do you want to harden mount options?"; then
+    
+    # Always secure /dev/shm
+    if ! grep -q "/dev/shm.*noexec" /etc/fstab; then
+        # Remove existing /dev/shm entry if present
+        sed -i '/\/dev\/shm/d' /etc/fstab
+        
+        # Add hardened entry
+        echo "tmpfs /dev/shm tmpfs defaults,nodev,nosuid,noexec 0 0" >> /etc/fstab
+        mount -o remount /dev/shm 2>/dev/null || true
+        log_success "/dev/shm hardened (nodev,nosuid,noexec)"
+    else
+        log_info "/dev/shm already hardened"
+    fi
+    
+    # Check if /tmp is a separate partition
+    if mount | grep -q "on /tmp type"; then
+        if ! grep -q "/tmp.*noexec" /etc/fstab; then
+            sed -i 's|\(/tmp.*defaults\)|\1,nodev,nosuid,noexec|' /etc/fstab
+            mount -o remount /tmp 2>/dev/null || true
+            log_success "/tmp hardened (nodev,nosuid,noexec)"
+        fi
+    else
+        log_info "/tmp is on root filesystem - cannot add noexec"
+        log_info "Consider: ln -s /dev/shm /tmp (if acceptable)"
+    fi
+    
+    # Check if /var/tmp is a separate partition
+    if mount | grep -q "on /var/tmp type"; then
+        if ! grep -q "/var/tmp.*noexec" /etc/fstab; then
+            sed -i 's|\(/var/tmp.*defaults\)|\1,nodev,nosuid,noexec|' /etc/fstab
+            mount -o remount /var/tmp 2>/dev/null || true
+            log_success "/var/tmp hardened (nodev,nosuid,noexec)"
+        fi
+    else
+        log_info "/var/tmp is on root filesystem - cannot add noexec"
+    fi
+    
+    fix_applied "CIS 1.6.1"
+else
+    fix_skipped "CIS 1.6.1"
+fi
+
+#══════════════════════════════════════════════════════════════════════════════
+# FIX: CIS 6.1 - System File Permissions
+#══════════════════════════════════════════════════════════════════════════════
+print_section "📋 CIS 6.1 - System File Permissions Audit"
+
+echo ""
+echo "Ensures critical system files have correct permissions:"
+echo "  - /etc/passwd (644) - User database"
+echo "  - /etc/shadow (640) - Password hashes"
+echo "  - /etc/group (644) - Group database"
+echo "  - /etc/gshadow (640) - Group passwords"
+echo "  - /etc/passwd- (644) - Backup"
+echo "  - /etc/shadow- (640) - Backup"
+echo ""
+
+if ask_user "Do you want to audit and fix system file permissions?"; then
+    
+    # /etc/passwd - world readable, root writable
+    chmod 644 /etc/passwd
+    chown root:root /etc/passwd
+    log_success "/etc/passwd: 644 root:root"
+    
+    # /etc/shadow - only root and shadow group
+    chmod 640 /etc/shadow
+    chown root:shadow /etc/shadow
+    log_success "/etc/shadow: 640 root:shadow"
+    
+    # /etc/group - world readable
+    chmod 644 /etc/group
+    chown root:root /etc/group
+    log_success "/etc/group: 644 root:root"
+    
+    # /etc/gshadow - only root and shadow group
+    chmod 640 /etc/gshadow
+    chown root:shadow /etc/gshadow
+    log_success "/etc/gshadow: 640 root:shadow"
+    
+    # Backup files
+    chmod 644 /etc/passwd- 2>/dev/null && log_success "/etc/passwd-: 644"
+    chmod 640 /etc/shadow- 2>/dev/null && log_success "/etc/shadow-: 640"
+    chmod 644 /etc/group- 2>/dev/null && log_success "/etc/group-: 644"
+    chmod 640 /etc/gshadow- 2>/dev/null && log_success "/etc/gshadow-: 640"
+    
+    fix_applied "CIS 6.1"
+else
+    fix_skipped "CIS 6.1"
+fi
 
 # ══════════════════════════════════════════════════════════════════════════════
 # EMERGENCY RESTORE SCRIPT
@@ -3613,7 +4422,7 @@ if ask_user "Wanna see a Secret?"; then
     echo ""
     echo -e "\e[31m    ~ I'm a boykisser ~\e[0m"
     echo ""
-    sleed 2
+    sleep 2
     echo "Time for the next meme"
     echo "Loading Obamna..."
     sleep 2
