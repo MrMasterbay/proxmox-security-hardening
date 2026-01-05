@@ -193,6 +193,47 @@ Based on **Lynis Security Auditing Tool**
   - NETW-3015: Promiscuous interfaces (required for VM bridges)
   - KRNL-5788: Non-standard kernel (pve-kernel uses different paths)
   - FILE-6310: Separate partitions (difficult to change post-installation)
+ 
+---
+
+## STIG Recommendations
+
+Based on the **DOD(Department of Defense) STIG Guidelines**
+
+### STIG UBTU-24-200000 - Concurrent Session Limit
+- **What it does**: Limits each user to maximum 10 concurrent login sessions
+- **Why it matters**: Prevents resource exhaustion attacks and limits blast radius if an account is compromised - attackers can't open unlimited shells
+- **Proxmox Impact**: NO impact on Proxmox operations - root is excluded and has unlimited sessions for cluster communication, migrations, and system operations
+
+### STIG UBTU-24-200260 - Disable Inactive Accounts
+- **What it does**: Automatically disables user accounts after 35 days without login
+- **Why it matters**: Dormant accounts are prime targets for attackers - if credentials are leaked, unused accounts may never notice the breach
+- **Proxmox Impact**: NO impact - root, superadmin, and backupadmin are explicitly excluded. Only affects additional user accounts that go unused for 35+ days
+
+### STIG UBTU-24-100030/100040 - Remove Insecure Legacy Services
+- **What it does**: Removes telnet, rsh-server, rsh-client, talk, ntalk, and nis packages
+- **Why it matters**: These legacy protocols transmit ALL data including passwords in cleartext - any network sniffer can capture credentials
+- **Proxmox Impact**: NO impact - Proxmox uses SSH exclusively for remote access. These packages are never needed in a modern environment
+
+### STIG UBTU-24-102010 - Audit at Boot
+- **What it does**: Adds `audit=1` kernel parameter to enable auditing from the very first moment of boot
+- **Why it matters**: Without this, actions during early boot (before auditd starts) are not logged - attackers could exploit this gap to hide malicious activity
+- **Proxmox Impact**: NO impact on functionality - slightly increases boot time by ~1-2 seconds. Provides complete audit trail from kernel initialization
+
+### STIG Extended Audit Rules - Privileged Command Logging
+- **What it does**: Comprehensive logging of security-relevant events including: privileged command execution (sudo, su, passwd), permission changes (chmod, chown), account modifications, cron changes, kernel module loading, network config changes, and Proxmox configuration changes
+- **Why it matters**: Provides forensic evidence for incident response - know exactly what commands were run, by whom, and when. Essential for detecting insider threats and compromised accounts
+- **Proxmox Impact**: MINIMAL impact - only audits actions by human users (auid>=1000), not system services. Log volume increases but modern systems handle this easily. Proxmox config changes (/etc/pve/) are specifically monitored
+
+### STIG AIDE Audit Tool Protection
+- **What it does**: Adds audit binaries (auditd, ausearch, aureport, etc.) to AIDE file integrity monitoring with SHA512 checksums
+- **Why it matters**: If an attacker compromises the audit tools themselves, they can hide their tracks by modifying how logs are searched or reported. AIDE detects any tampering with these critical binaries
+- **Proxmox Impact**: NO impact - only monitors audit tool binaries for unauthorized changes. Requires AIDE to be installed first (FINT-4350)
+
+### STIG Memory Protection - Kernel Hardening
+- **What it does**: Adds kernel parameters: `init_on_alloc=1` (zero memory on allocation), `init_on_free=1` (zero memory on free), `page_alloc.shuffle=1` (randomize page allocator), `slab_nomerge` (prevent slab cache merging)
+- **Why it matters**: Hardens against common exploit techniques - prevents information leaks from uninitialized memory, use-after-free attacks, and heap spraying. Makes exploitation significantly harder
+- **Proxmox Impact**: MINIMAL impact - approximately 1-3% performance overhead which is negligible for most workloads. VMs and containers are not affected as they have their own memory management according to proxmox docs
 
 ### Optional Features
 - **Proxmox Auto-Update Script**: Integration with automated cluster update system
