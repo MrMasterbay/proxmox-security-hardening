@@ -55,6 +55,11 @@ Based on **CIS Debian Linux 13 Benchmark v1.0.0**
 - **Why it matters**: Core dumps can contain passwords, encryption keys, and sensitive data
 - **Proxmox Impact**: None - VM crashes still logged normally
 
+### CIS 1.6.1 - Mount Options Hardening
+- **What it does**: Applies security restrictions to filesystem mount points (/tmp, /var/tmp, /dev/shm) by preventing device files, SUID binaries, and code execution
+- **Why it matters**: Without proper mount options, attackers can create device files to access hardware, place SUID binaries for privilege escalation, or execute malicious code from temporary directories
+- **Proxmox Impact**: NO impact on cluster operations, VMs, backups, or web interface - only hardens temporary filesystem security against common attack vectors
+
 ### CIS 2.4.1.2-2.4.2.1 - Cron/At Access Hardening
 - **What it does**: Restricts job scheduler access to root only
 - **Why it matters**: Attackers can use cron for persistence or privilege escalation
@@ -101,6 +106,11 @@ Based on **CIS Debian Linux 13 Benchmark v1.0.0**
 - **What it does**: Automatically logs out inactive shell sessions after 15 minutes
 - **Why it matters**: Prevents forgotten open terminals from being a security risk
 - **Proxmox Impact**: Only interactive SSH sessions affected - NOT cluster communication, migrations, backups, or cron jobs
+
+### CIS 6.1 - System File Permissions
+- **What it does**: Sets correct permissions on critical system files (/etc/passwd, /etc/shadow, /etc/group, /etc/gshadow)
+- **Why it matters**: Prevents unauthorized access to password hashes and user/group information that could enable privilege escalation attacks
+- **Proxmox Impact**: NO impact - standard Linux filesystem hardening, does not affect Proxmox operations
 
 ---
 
