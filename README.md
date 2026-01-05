@@ -241,7 +241,7 @@ chmod +x seuwurity.sh
 - `/etc/iptables/rules.v4` - Firewall rules
 
 ### Services Modified
-- SSH (moved to port 2222)
+- SSH (moved to port 22)
 - AppArmor (enabled and enforced)
 - Auditd (enabled with rules)
 - Fail2Ban (configured and enabled)
@@ -369,8 +369,8 @@ If you lose access:
 # From console, check SSH service
 systemctl status sshd
 
-# Verify port 2222 is listening
-ss -tlnp | grep 2222
+# Verify port 22 is listening
+ss -tlnp | grep 22
 
 # Check firewall rules
 iptables -L -n
@@ -432,7 +432,7 @@ systemctl status unattended-upgrades
 ### Modify SSH Port
 Edit `/etc/ssh/sshd_config`:
 ```bash
-Port 2222  # Change to your preferred port
+Port 22  # Change to your preferred port
 ```
 
 ### Adjust Fail2Ban Settings
