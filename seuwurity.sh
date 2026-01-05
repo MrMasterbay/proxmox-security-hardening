@@ -2850,7 +2850,7 @@ setup_clamav_scheduled_scan() {
     echo ""
     echo "ClamAV does NOT scan automatically after installation!"
     echo "You can set up scheduled scans to run weekly."
-    echo "Please note that this is currently not recommended!"
+    echo -e "${YELLOW}⚠️  WARNING: Please note that this is currently not recommended!${NC}"
     echo "But it could be required because of some compliance"
     echo ""
     echo "Scan options:"
