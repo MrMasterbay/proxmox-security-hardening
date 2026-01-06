@@ -1723,7 +1723,11 @@ EOF
         cat >> /etc/ssh/sshd_config <<EOF
 # $IP_TYPE: $IP
 Match Address $IP
-    PermitRootLogin yes
+    PermitRootLogin prohibit-password
+    PubkeyAuthentication yes
+    PasswordAuthentication no
+    AuthenticationMethods publickey
+    AcceptEnv LC_*
     AllowUsers root $SUPERADMIN $BACKUPADMIN
 
 EOF
