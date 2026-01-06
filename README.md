@@ -75,7 +75,7 @@ chmod +x seuwurity.sh
 
 1. **Download the script**:
 ```bash
-wget https://raw.githubusercontent.com/MrMasterbay/proxmox-security-hardening/main/new-node-join.shh && chmod +x new-node-join.sh && ./new-node-join.sh
+wget https://raw.githubusercontent.com/MrMasterbay/proxmox-security-hardening/main/new-node-join.sh && chmod +x new-node-join.sh && ./new-node-join.sh
 ```
 
 2. **Run This Script on every other Node in the Cluster that is hardend!**:
