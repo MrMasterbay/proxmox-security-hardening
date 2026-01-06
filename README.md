@@ -71,6 +71,18 @@ chmod +x seuwurity.sh
 ./seuwurity.sh
 ```
 
+### A new Node wants to join the Cluster?
+
+1. **Download the script**:
+```bash
+wget https://raw.githubusercontent.com/MrMasterbay/proxmox-security-hardening/main/new-node-join.shh && chmod +x new-node-join.sh && ./new-node-join.sh
+```
+
+2. **Run This Script on every other Node in the Cluster that is hardend!**:
+```bash
+./new-node-join.sh
+```
+
 ---
 
 ## CIS Benchmark Controls
