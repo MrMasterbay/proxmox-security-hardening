@@ -41,6 +41,10 @@
 #  Changelog 3.5.2
 #   - Added STIG Recommendations
 #
+# Changelog 3.5.3
+#   - Fixed a small typo that could break the script when no jumphosts are defined
+#   - Added more comments because why not
+#   - Added more STIG Recommendations and Lynis Recommendations
 #
 #
 # Known "features" (not bugs, just undocumented features):
@@ -61,7 +65,7 @@ set -e  # Exit on errors (because I'm too lazy to check every exit code)
 # Here's the version. If you change this without knowing what you're doing,
 # that's your problem, not mine.
 # ══════════════════════════════════════════════════════════════════════════════
-SCRIPT_VERSION="3.5.2"
+SCRIPT_VERSION="3.5.3"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/MrMasterbay/proxmox-security-hardening/main/seuwurity.sh"
 GITHUB_REPO_URL="https://github.com/MrMasterbay/proxmox-security-hardening"
 
@@ -3297,6 +3301,63 @@ else
 fi
 
 #══════════════════════════════════════════════════════════════════════════════
+# FIX: DEB-0280 - Isolate /tmp per session ## would also make sense
+#══════════════════════════════════════════════════════════════════════════════
+
+print_section "📁 DEB-0280: Isolate /tmp per Session"
+
+echo ""
+echo "libpam-tmpdir creates isolated /tmp directories for each user session."
+echo ""
+echo "Security benefits:"
+echo "  - Prevents /tmp race condition attacks"
+echo "  - Users cannot see each other's temporary files"
+echo "  - Limits damage from compromised processes"
+echo ""
+
+if ask_user "Do you want to install libpam-tmpdir?"; then
+    if ! dpkg -l 2>/dev/null | grep -q "libpam-tmpdir"; then
+        apt-get update -qq
+        apt-get install -y libpam-tmpdir
+        log_success "libpam-tmpdir installed - /tmp is now isolated per session"
+        fix_applied "DEB-0280"
+    else
+        log_success "libpam-tmpdir already installed - No action needed"
+    fi
+else
+    fix_skipped "DEB-0280"
+fi
+
+#══════════════════════════════════════════════════════════════════════════════
+# FIX: PKGS-7394 - Patch Management Tools 
+#══════════════════════════════════════════════════════════════════════════════
+
+print_section "📦 PKGS-7394: Patch Management (apt-show-versions)"
+
+echo ""
+echo "apt-show-versions helps with patch management by showing:"
+echo "  - Which packages have updates available"
+echo "  - Which packages are from which repository"
+echo "  - Version comparison between installed and available"
+echo ""
+echo "Usage: 'apt-show-versions -u' shows all upgradable packages"
+echo ""
+
+if ask_user "Do you want to install apt-show-versions?"; then
+    if ! dpkg -l 2>/dev/null | grep -q "apt-show-versions"; then
+        apt-get update -qq
+        apt-get install -y apt-show-versions
+        log_success "apt-show-versions installed"
+        log_info "Run 'apt-show-versions -u' to see upgradable packages"
+        fix_applied "PKGS-7394"
+    else
+        log_success "apt-show-versions already installed - No action needed"
+    fi
+else
+    fix_skipped "PKGS-7394"
+fi
+
+#══════════════════════════════════════════════════════════════════════════════
 # FIX: USB-1000/STRG-1846 - USB/Firewire Storage
 #══════════════════════════════════════════════════════════════════════════════
 
@@ -4651,6 +4712,53 @@ else
     fix_skipped "STIG Memory Protection"
 fi
 
+#══════════════════════════════════════════════════════════════════════════════
+# FIX: CIS 6.2.3.36 / STIG V-270832 - Audit Rules Immutable
+#══════════════════════════════════════════════════════════════════════════════
+
+print_section "🔒 STIG V-270832: Make Audit Rules Immutable"
+
+echo ""
+echo "Setting audit rules to immutable mode (-e 2) prevents attackers from"
+echo "modifying audit rules to hide their activity."
+echo ""
+echo "What this means:"
+echo "  - Audit rules cannot be changed with auditctl"
+echo "  - Changes require a system REBOOT"
+echo "  - Attackers cannot disable auditing without rebooting"
+echo ""
+echo -e "${YELLOW}⚠️  After enabling this, any audit rule changes require reboot!${NC}"
+echo ""
+
+if ask_user "Do you want to make audit rules immutable?"; then
+    
+    # Check if already set
+    if grep -q "^-e 2" /etc/audit/rules.d/*.rules 2>/dev/null; then
+        log_info "Audit rules already set to immutable"
+    else
+        # Add -e 2 to a finalize rules file (must be loaded LAST)
+        cat > /etc/audit/rules.d/99-finalize.rules << 'EOF'
+# ═══════════════════════════════════════════════════════════════
+# CIS 6.2.3.36 / STIG V-270832: Make audit configuration immutable
+# This MUST be the last rule loaded!
+# After this, audit rules cannot be changed without reboot.
+# ═══════════════════════════════════════════════════════════════
+
+# Make the audit configuration immutable
+# Requires reboot to change audit rules
+-e 2
+EOF
+        
+        log_success "Audit rules set to immutable (-e 2)"
+        log_warning "Audit rule changes now require system reboot!"
+        log_info "Rules will be immutable after next 'augenrules --load' or reboot"
+        fix_applied "STIG V-270832"
+    fi
+    
+else
+    fix_skipped "STIG V-270832"
+fi
+
 # ══════════════════════════════════════════════════════════════════════════════
 # EMERGENCY RESTORE SCRIPT
 # For when everything goes wrong
@@ -4910,7 +5018,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 echo ""
 echo -e "\e[33m╔══════════════════════════════════════════════════════════════════╗\e[0m"
-echo -e "\e[33m║\e[0m  \e[1;31m⚠  MANUAL STEP REQUIRED ALSO SCROLL UP ⚠\e[0m                                     \e[33m║\e[0m"
+echo -e "\e[33m║\e[0m  \e[1;31m⚠  MANUAL STEP REQUIRED ⚠\e[0m                                     \e[33m║\e[0m"
 echo -e "\e[33m╠══════════════════════════════════════════════════════════════════╣\e[0m"
 echo -e "\e[33m║\e[0m                                                                  \e[33m║\e[0m"
 echo -e "\e[33m║\e[0m  Enable TFA in the WebUI for:                                    \e[33m║\e[0m"
@@ -4980,4 +5088,3 @@ if ask_user "Wanna see a Secret?"; then
 else
     echo "Me sad now 🥺"
 fi
-
