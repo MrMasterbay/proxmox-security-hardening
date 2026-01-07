@@ -293,7 +293,7 @@ Based on the **DOD(Department of Defense) STIG Guidelines**
 ### STIG V-270832 - Audit Rules Immutable
 - **What it does**: Adds `-e 2` flag to audit rules which locks the audit configuration. Once set, audit rules cannot be modified using `auditctl` - a system reboot is required to make any changes
 - **Why it matters**: Prevents attackers from disabling or modifying audit rules to hide their tracks. Even if an attacker gains root access, they cannot turn off auditing without triggering a noticeable system reboot
-- **Proxmox Impact**: MINIM
+- **Proxmox Impact**: MINIMAL impact - audit rules still function normally, only modification is blocked. Note that any legitimate audit rule changes will require a reboot. Plan audit rule changes during maintenance windows
 
 
 ### Optional Features
