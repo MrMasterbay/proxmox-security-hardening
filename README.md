@@ -231,6 +231,17 @@ Based on **Lynis Security Auditing Tool**
 - **What it does**: Limits compiler (gcc, g++, make) usage to root only
 - **Why it matters**: Prevents attackers from compiling exploit code if they gain shell access
 
+### PKGS-7394 - Patch Management Tools
+- **What it does**: Installs `apt-show-versions` which provides a quick overview of installed packages and their update status. Run `apt-show-versions -u` to see all packages with available upgrades
+- **Why it matters**: Simplifies patch management by making it easy to identify outdated packages at a glance. Essential for maintaining security hygiene and quickly identifying systems that need updates
+- **Proxmox Impact**: NO impact - this is a read-only tool that only queries package status. Does not modify any system behavior or affect Proxmox operations
+  
+### DEB-0280 - Isolate /tmp per Session
+- **What it does**: Installs `libpam-tmpdir` which creates isolated temporary directories for each user session. Instead of a shared `/tmp`, each session gets its own private `/tmp` directory
+- **Why it matters**: Prevents /tmp race condition attacks where attackers exploit predictable temporary file names. Also prevents users from seeing or manipulating each other's temporary files, limiting lateral movement after a compromise
+- **Proxmox Impact**: NO impact - this is a PAM module that only affects interactive sessions. Proxmox services, VMs, containers, and cluster operations are completely unaffected
+
+
 ### Lynis Whitelist for Proxmox
 - **What it does**: Creates profile to skip false positive tests specific to Proxmox
 - **Skipped tests**:
@@ -278,6 +289,12 @@ Based on the **DOD(Department of Defense) STIG Guidelines**
 - **What it does**: Adds kernel parameters: `init_on_alloc=1` (zero memory on allocation), `init_on_free=1` (zero memory on free), `page_alloc.shuffle=1` (randomize page allocator), `slab_nomerge` (prevent slab cache merging)
 - **Why it matters**: Hardens against common exploit techniques - prevents information leaks from uninitialized memory, use-after-free attacks, and heap spraying. Makes exploitation significantly harder
 - **Proxmox Impact**: MINIMAL impact - approximately 1-3% performance overhead which is negligible for most workloads. VMs and containers are not affected as they have their own memory management according to proxmox docs
+  
+### STIG V-270832 - Audit Rules Immutable
+- **What it does**: Adds `-e 2` flag to audit rules which locks the audit configuration. Once set, audit rules cannot be modified using `auditctl` - a system reboot is required to make any changes
+- **Why it matters**: Prevents attackers from disabling or modifying audit rules to hide their tracks. Even if an attacker gains root access, they cannot turn off auditing without triggering a noticeable system reboot
+- **Proxmox Impact**: MINIM
+
 
 ### Optional Features
 - **Proxmox Auto-Update Script**: Integration with automated cluster update system
